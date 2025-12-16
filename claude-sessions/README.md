@@ -1,0 +1,72 @@
+# claude-sessions
+
+Browse recent Claude Code sessions from `~/.claude/projects`.
+
+## Usage
+
+```
+claude-sessions [options] [count]
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `-n COUNT` | Number of sessions to show (default: 3) |
+| `-a, --all` | Include agent/subagent sessions |
+| `-s, --short` | Use shortened paths (gh:, ws:, ~/) |
+| `-v, --verbose` | Show extra info (refs, file path, message count) |
+| `-j, --json` | Output as JSON (one object per line) |
+| `--here` | Only show sessions for current directory |
+| `-h, --help` | Show help |
+
+## Examples
+
+### Default output
+
+```
+$ claude-sessions
+Dec 16 12:17 323.9K  /Users/jane/workspace/github.com/acme/webapp
+             └─ Add authentication middleware to Express app
+             ▶  git status
+                56d2469f-acb8-4b82-9741-7fc81693d0d8
+Dec 16 12:16 146.7K  /Users/jane/workspace/github.com/acme/webapp
+             ▶  forget it
+                00359c05-21e3-4d1e-ac2f-c73bce940228
+Dec 16 12:08   1.2M  /Users/jane/workspace/github.com/acme/infra-terraform
+             └─ Refactor VPC module for multi-region support
+             ▶  Write CLAUDE.md with session context
+                60215d77-6ac3-4cf8-9a55-18c67aaca6bd
+```
+
+### Verbose output
+
+```
+$ claude-sessions -v
+Dec 16 12:17 323.9K  /Users/jane/workspace/github.com/acme/webapp
+             └─ Add authentication middleware to Express app
+             ▶  git status
+             📊 49/87 messages (user/assistant)
+             🎫 PROJ-1234
+             📁 /Users/jane/.claude/projects/-Users-jane-..../56d2469f-....jsonl
+                56d2469f-acb8-4b82-9741-7fc81693d0d8
+Dec 16 12:08   1.2M  /Users/jane/workspace/github.com/acme/infra-terraform
+             └─ Refactor VPC module for multi-region support
+             ▶  Write CLAUDE.md with session context
+             📊 114/250 messages (user/assistant)
+             🎫 PROJ-5678
+             🌿 main
+             🔗 https://docs.example.com/api/v2/...
+             📁 /Users/jane/.claude/projects/-Users-jane-..../60215d77-....jsonl
+                60215d77-6ac3-4cf8-9a55-18c67aaca6bd
+```
+
+### Short paths
+
+```
+$ claude-sessions -s
+Dec 16 12:17 323.9K  gh:acme/webapp
+             └─ Add authentication middleware to Express app
+             ▶  git status
+                56d2469f-acb8-4b82-9741-7fc81693d0d8
+```

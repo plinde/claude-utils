@@ -1,0 +1,273 @@
+#!/usr/bin/env bash
+#
+# claude-sessions - Browse recent Claude Code sessions
+#
+# Usage: claude-sessions [options] [count]
+#   -n COUNT      Number of sessions to show
+#   -a, --all     Include agent/subagent sessions
+#   -s, --short   Use shortened paths (gh:, ws:, ~/)
+#   -v, --verbose Show extra info (refs, file path, message count)
+#   -j, --json    Output as JSON
+#   --here        Only show sessions for current directory
+#   -h, --help    Show help
+#
+
+# Configuration
+PROJECTS_DIR="${HOME}/.claude/projects"
+DEFAULT_COUNT=3
+
+# Colors
+C_CYAN='\033[36m'
+C_YELLOW='\033[33m'
+C_GRAY='\033[90m'
+C_MAGENTA='\033[35m'
+C_GREEN='\033[92m'
+C_BLUE='\033[94m'
+C_ORANGE='\033[93m'
+C_RESET='\033[0m'
+
+# Helper: Extract last user prompt from a session file
+get_last_prompt() {
+    local filepath="$1"
+    grep '"type":"user"' "$filepath" 2>/dev/null | \
+        jq -r 'select(.message.content | type == "string") | .message.content' 2>/dev/null | \
+        grep -v '^\[Request' | \
+        tail -1 | \
+        tr '\n' ' ' | \
+        sed 's/  */ /g' | \
+        head -c 80
+}
+
+# Helper: Extract references from a session file
+get_refs() {
+    local filepath="$1"
+    local urls jira branches
+
+    # HTTP URLs - filter out noise and fragments
+    urls=$(grep -oE 'https?://[^"<>\\[:space:]]{10,}' "$filepath" 2>/dev/null | \
+        grep -vE 'localhost|127\.0\.0\.1|example\.com|\$|\\n' | \
+        grep -E '\.(com|org|net|io|cloud|dev|co)/|github\.com' | \
+        sort -u | head -5)
+
+    # JIRA tickets
+    jira=$(grep -oE '\b(PSEC|O11Y|INFRA|SEC|ENG|CLOUD)-[0-9]+\b' "$filepath" 2>/dev/null | \
+        sort -u | tr '\n' ' ')
+
+    # Git branches from metadata
+    branches=$(grep -oE '"gitBranch":"[^"]+' "$filepath" 2>/dev/null | \
+        sed 's/"gitBranch":"//' | \
+        grep -v '^$' | sort -u | tr '\n' ' ')
+
+    # Output
+    [[ -n "$jira" ]] && echo "JIRA:${jira}"
+    [[ -n "$branches" ]] && echo "BRANCH:${branches}"
+    [[ -n "$urls" ]] && echo "URL:${urls}"
+}
+
+# Helper: Count messages in a session file
+get_message_count() {
+    local filepath="$1"
+    local user_count assistant_count
+    user_count=$(grep -c '"type":"user"' "$filepath" 2>/dev/null || echo 0)
+    assistant_count=$(grep -c '"type":"assistant"' "$filepath" 2>/dev/null || echo 0)
+    echo "${user_count}/${assistant_count}"
+}
+
+# Helper: Format file size
+format_size() {
+    local size=$1
+    if (( size >= 1048576 )); then
+        awk "BEGIN {printf \"%.1fM\", $size/1048576}"
+    elif (( size >= 1024 )); then
+        awk "BEGIN {printf \"%.1fK\", $size/1024}"
+    else
+        echo "${size}B"
+    fi
+}
+
+# Helper: Shorten path for display
+shorten_path() {
+    local path="$1"
+    path="${path/#$HOME\/workspace\/github.com\//gh:}"
+    path="${path/#$HOME\/workspace\//ws:}"
+    path="${path/#$HOME\//~/}"
+    echo "$path"
+}
+
+# Main function
+main() {
+    local count=$DEFAULT_COUNT
+    local include_agents=false
+    local short_paths=false
+    local verbose=false
+    local json_output=false
+    local current_dir_only=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -a|--all) include_agents=true; shift ;;
+            -s|--short) short_paths=true; shift ;;
+            -v|--verbose) verbose=true; shift ;;
+            -j|--json) json_output=true; shift ;;
+            -n) count="$2"; shift 2 ;;
+            --here) current_dir_only=true; shift ;;
+            -h|--help)
+                cat <<'HELP'
+Usage: claude-sessions [options] [count]
+
+Browse recent Claude Code sessions from ~/.claude/projects
+
+Options:
+  -n COUNT       Number of sessions to show (default: 3)
+  -a, --all      Include agent/subagent sessions
+  -s, --short    Use shortened paths (gh:, ws:, ~/)
+  -v, --verbose  Show extra info (refs, file path, message count)
+  -j, --json     Output as JSON (one object per line)
+  --here         Only show sessions for current directory
+  -h, --help     Show this help
+
+Examples:
+  claude-sessions           # Show 3 most recent sessions
+  claude-sessions -n 20     # Show 20 most recent sessions
+  claude-sessions 20        # Same as above (positional)
+  claude-sessions -a        # Include agent sessions
+  claude-sessions -s        # Use shortened paths
+  claude-sessions -v        # Show refs, file path, message counts
+  claude-sessions --here    # Sessions for current directory only
+  claude-sessions -j | jq   # JSON output for scripting
+HELP
+                return 0
+                ;;
+            [0-9]*) count="$1"; shift ;;
+            *)
+                echo "Unknown option: $1" >&2
+                echo "Use -h for help" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    [[ ! -d "$PROJECTS_DIR" ]] && {
+        echo "No Claude projects directory found at $PROJECTS_DIR" >&2
+        return 1
+    }
+
+    # Get list of session files sorted by modification time
+    local file_list
+    local search_dir="$PROJECTS_DIR"
+
+    # If --here flag, limit to current directory's project folder
+    if $current_dir_only; then
+        local cwd_encoded
+        cwd_encoded=$(pwd | sed 's/^\///' | sed 's/[\/.]/-/g')
+        search_dir="${PROJECTS_DIR}/-${cwd_encoded}"
+        [[ ! -d "$search_dir" ]] && {
+            echo "No sessions found for current directory" >&2
+            return 1
+        }
+    fi
+
+    # Build file list (bash 3 compatible)
+    local files_str
+    if $include_agents; then
+        files_str=$(find "$search_dir" -name "*.jsonl" -type f -print0 2>/dev/null | \
+            xargs -0 ls -t 2>/dev/null | head -n "$count")
+    else
+        files_str=$(find "$search_dir" -name "*.jsonl" -type f ! -name "agent-*.jsonl" -print0 2>/dev/null | \
+            xargs -0 ls -t 2>/dev/null | head -n "$count")
+    fi
+
+    # Convert to array (works in bash 3)
+    local IFS=$'\n'
+    file_list=($files_str)
+    unset IFS
+
+    [[ ${#file_list[@]} -eq 0 ]] && {
+        echo "No sessions found" >&2
+        return 1
+    }
+
+    # Process each file
+    local filepath size size_human time_str filename summary project_path display_path last_prompt msg_count
+    for filepath in "${file_list[@]}"; do
+        [[ -z "$filepath" || ! -f "$filepath" ]] && continue
+
+        # Get file stats (macOS stat syntax)
+        size=$(stat -f %z "$filepath" 2>/dev/null)
+        time_str=$(stat -f "%Sm" -t "%b %d %H:%M" "$filepath" 2>/dev/null)
+        filename=$(basename "$filepath" .jsonl)
+
+        # Extract metadata from JSONL
+        summary=$(head -1 "$filepath" 2>/dev/null | jq -r '.summary // empty' 2>/dev/null | \
+            sed 's/<system-reminder>.*//' | tr '\n' ' ' | sed 's/  */ /g' | head -c 70)
+        project_path=$(grep -m1 '"cwd"' "$filepath" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null)
+        last_prompt=$(get_last_prompt "$filepath")
+
+        # Fallback for project path
+        [[ -z "$project_path" ]] && \
+            project_path=$(basename "$(dirname "$filepath")" | sed 's/^-/\//' | sed 's/-/\//g')
+
+        # Choose display path based on -s flag
+        if $short_paths; then
+            display_path=$(shorten_path "$project_path")
+        else
+            display_path="$project_path"
+        fi
+
+        size_human=$(format_size "$size")
+
+        if $json_output; then
+            # JSON output - always include all data
+            local refs_raw jira_json branch_json
+            refs_raw=$(get_refs "$filepath")
+            jira_json=$(echo "$refs_raw" | grep '^JIRA:' | sed 's/^JIRA://' | xargs | sed 's/ /","/g')
+            branch_json=$(echo "$refs_raw" | grep '^BRANCH:' | sed 's/^BRANCH://' | xargs | sed 's/ /","/g')
+            [[ -n "$jira_json" ]] && jira_json="[\"$jira_json\"]" || jira_json="[]"
+            [[ -n "$branch_json" ]] && branch_json="[\"$branch_json\"]" || branch_json="[]"
+            msg_count=$(get_message_count "$filepath")
+
+            printf '{"file":"%s","project":"%s","session_id":"%s","size":"%s","modified":"%s","messages":"%s","summary":"%s","last_prompt":"%s","jira":%s,"branches":%s}\n' \
+                "$filepath" "$project_path" "$filename" "$size_human" "$time_str" "$msg_count" \
+                "$(echo "$summary" | sed 's/"/\\"/g')" \
+                "$(echo "$last_prompt" | sed 's/"/\\"/g')" \
+                "$jira_json" "$branch_json"
+        else
+            # Human-readable output
+            printf "${C_CYAN}%-12s${C_RESET} ${C_YELLOW}%6s${C_RESET}  %s\n" "$time_str" "$size_human" "$display_path"
+
+            [[ -n "$summary" && "$summary" != " " ]] && \
+                printf "             ${C_GRAY}└─ %s${C_RESET}\n" "$summary"
+
+            [[ -n "$last_prompt" ]] && \
+                printf "             ${C_MAGENTA}▶  %s${C_RESET}\n" "$last_prompt"
+
+            # Verbose: show refs, message count, and file path
+            if $verbose; then
+                msg_count=$(get_message_count "$filepath")
+                printf "             ${C_GRAY}📊 %s messages (user/assistant)${C_RESET}\n" "$msg_count"
+
+                local refs_output jira_refs branch_refs url_refs
+                refs_output=$(get_refs "$filepath")
+                if [[ -n "$refs_output" ]]; then
+                    jira_refs=$(echo "$refs_output" | grep '^JIRA:' | sed 's/^JIRA://')
+                    branch_refs=$(echo "$refs_output" | grep '^BRANCH:' | sed 's/^BRANCH://')
+                    url_refs=$(echo "$refs_output" | grep '^URL:' | sed 's/^URL://' | head -c 100)
+
+                    [[ -n "$jira_refs" ]] && \
+                        printf "             ${C_ORANGE}🎫 %s${C_RESET}\n" "$jira_refs"
+                    [[ -n "$branch_refs" ]] && \
+                        printf "             ${C_GREEN}🌿 %s${C_RESET}\n" "$branch_refs"
+                    [[ -n "$url_refs" ]] && \
+                        printf "             ${C_BLUE}🔗 %s${C_RESET}\n" "$url_refs"
+                fi
+
+                printf "             ${C_GRAY}📁 %s${C_RESET}\n" "$filepath"
+            fi
+
+            printf "             ${C_GRAY}   %s${C_RESET}\n" "$filename"
+        fi
+    done
+}
+
+main "$@"
