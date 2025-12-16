@@ -7,7 +7,8 @@
 #   -a, --all     Include agent/subagent sessions
 #   -s, --short   Use shortened paths (gh:, ws:, ~/)
 #   -v, --verbose Show extra info (refs, file path, message count)
-#   -g, --grep    Search sessions for keyword (case-insensitive)
+#   -g, --grep    Search sessions for keyword (case-sensitive)
+#   -i            Case-insensitive search (use with -g)
 #   -j, --json    Output as JSON
 #   --here        Only show sessions for current directory
 #   -h, --help    Show help
@@ -104,6 +105,7 @@ main() {
     local json_output=false
     local current_dir_only=false
     local search_pattern=""
+    local case_insensitive=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -112,6 +114,7 @@ main() {
             -s|--short) short_paths=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
             -g|--grep) search_pattern="$2"; shift 2 ;;
+            -i) case_insensitive=true; shift ;;
             -j|--json) json_output=true; shift ;;
             -n) count="$2"; shift 2 ;;
             --here) current_dir_only=true; shift ;;
@@ -126,7 +129,8 @@ Options:
   -a, --all      Include agent/subagent sessions
   -s, --short    Use shortened paths (gh:, ws:, ~/)
   -v, --verbose  Show extra info (refs, file path, message count)
-  -g, --grep     Search sessions for keyword (case-insensitive)
+  -g, --grep     Search sessions for keyword (case-sensitive)
+  -i             Case-insensitive search (use with -g)
   -j, --json     Output as JSON (one object per line)
   --here         Only show sessions for current directory
   -h, --help     Show this help
@@ -138,7 +142,8 @@ Examples:
   claude-sessions -a        # Include agent sessions
   claude-sessions -s        # Use shortened paths
   claude-sessions -v        # Show refs, file path, message counts
-  claude-sessions -g tutor  # Search for sessions containing 'tutor'
+  claude-sessions -g Tutor     # Case-sensitive search
+  claude-sessions -g tutor -i  # Case-insensitive search
   claude-sessions --here    # Sessions for current directory only
   claude-sessions -j | jq   # JSON output for scripting
 HELP
@@ -187,11 +192,14 @@ HELP
                 xargs -0 ls -t 2>/dev/null)
         fi
 
-        # Filter by grep match (case-insensitive)
+        # Filter by grep match
+        local grep_opts="-q"
+        $case_insensitive && grep_opts="-qi"
+
         files_str=""
         while IFS= read -r f; do
             [[ -z "$f" ]] && continue
-            if grep -qi "$search_pattern" "$f" 2>/dev/null; then
+            if grep $grep_opts "$search_pattern" "$f" 2>/dev/null; then
                 files_str+="$f"$'\n'
                 ((matched_count++))
                 [[ $matched_count -ge $count ]] && break

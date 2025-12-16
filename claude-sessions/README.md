@@ -16,7 +16,8 @@ claude-sessions [options] [count]
 | `-a, --all` | Include agent/subagent sessions |
 | `-s, --short` | Use shortened paths (gh:, ws:, ~/) |
 | `-v, --verbose` | Show extra info (refs, file path, message count) |
-| `-g, --grep KEYWORD` | Search sessions for keyword (case-insensitive) |
+| `-g, --grep KEYWORD` | Search sessions for keyword (case-sensitive) |
+| `-i` | Case-insensitive search (use with `-g`) |
 | `-j, --json` | Output as JSON (one object per line) |
 | `--here` | Only show sessions for current directory |
 | `-h, --help` | Show help |
@@ -75,7 +76,10 @@ Dec 16 12:17 323.9K  gh:acme/webapp
 ### Search sessions
 
 ```
-$ claude-sessions -g docker
+$ claude-sessions -g Docker        # case-sensitive
+$ claude-sessions -g docker -i     # case-insensitive
+
+$ claude-sessions -g docker -i
 Dec 15 14:22  89.4K  /Users/jane/workspace/github.com/acme/webapp
              └─ Configure Docker multi-stage build for production
              ▶  run the build
