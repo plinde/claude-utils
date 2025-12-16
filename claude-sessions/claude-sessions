@@ -7,6 +7,7 @@
 #   -a, --all     Include agent/subagent sessions
 #   -s, --short   Use shortened paths (gh:, ws:, ~/)
 #   -v, --verbose Show extra info (refs, file path, message count)
+#   -g, --grep    Search sessions for keyword (case-insensitive)
 #   -j, --json    Output as JSON
 #   --here        Only show sessions for current directory
 #   -h, --help    Show help
@@ -102,6 +103,7 @@ main() {
     local verbose=false
     local json_output=false
     local current_dir_only=false
+    local search_pattern=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -109,6 +111,7 @@ main() {
             -a|--all) include_agents=true; shift ;;
             -s|--short) short_paths=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
+            -g|--grep) search_pattern="$2"; shift 2 ;;
             -j|--json) json_output=true; shift ;;
             -n) count="$2"; shift 2 ;;
             --here) current_dir_only=true; shift ;;
@@ -123,6 +126,7 @@ Options:
   -a, --all      Include agent/subagent sessions
   -s, --short    Use shortened paths (gh:, ws:, ~/)
   -v, --verbose  Show extra info (refs, file path, message count)
+  -g, --grep     Search sessions for keyword (case-insensitive)
   -j, --json     Output as JSON (one object per line)
   --here         Only show sessions for current directory
   -h, --help     Show this help
@@ -134,6 +138,7 @@ Examples:
   claude-sessions -a        # Include agent sessions
   claude-sessions -s        # Use shortened paths
   claude-sessions -v        # Show refs, file path, message counts
+  claude-sessions -g tutor  # Search for sessions containing 'tutor'
   claude-sessions --here    # Sessions for current directory only
   claude-sessions -j | jq   # JSON output for scripting
 HELP
@@ -169,13 +174,38 @@ HELP
     fi
 
     # Build file list (bash 3 compatible)
-    local files_str
-    if $include_agents; then
-        files_str=$(find "$search_dir" -name "*.jsonl" -type f -print0 2>/dev/null | \
-            xargs -0 ls -t 2>/dev/null | head -n "$count")
+    local files_str all_files matched_count=0
+
+    # When searching, we need to check all files, then limit results
+    if [[ -n "$search_pattern" ]]; then
+        # Get all files sorted by time (no limit yet)
+        if $include_agents; then
+            all_files=$(find "$search_dir" -name "*.jsonl" -type f -print0 2>/dev/null | \
+                xargs -0 ls -t 2>/dev/null)
+        else
+            all_files=$(find "$search_dir" -name "*.jsonl" -type f ! -name "agent-*.jsonl" -print0 2>/dev/null | \
+                xargs -0 ls -t 2>/dev/null)
+        fi
+
+        # Filter by grep match (case-insensitive)
+        files_str=""
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if grep -qi "$search_pattern" "$f" 2>/dev/null; then
+                files_str+="$f"$'\n'
+                ((matched_count++))
+                [[ $matched_count -ge $count ]] && break
+            fi
+        done <<< "$all_files"
     else
-        files_str=$(find "$search_dir" -name "*.jsonl" -type f ! -name "agent-*.jsonl" -print0 2>/dev/null | \
-            xargs -0 ls -t 2>/dev/null | head -n "$count")
+        # No search - just get recent files
+        if $include_agents; then
+            files_str=$(find "$search_dir" -name "*.jsonl" -type f -print0 2>/dev/null | \
+                xargs -0 ls -t 2>/dev/null | head -n "$count")
+        else
+            files_str=$(find "$search_dir" -name "*.jsonl" -type f ! -name "agent-*.jsonl" -print0 2>/dev/null | \
+                xargs -0 ls -t 2>/dev/null | head -n "$count")
+        fi
     fi
 
     # Convert to array (works in bash 3)
@@ -184,7 +214,11 @@ HELP
     unset IFS
 
     [[ ${#file_list[@]} -eq 0 ]] && {
-        echo "No sessions found" >&2
+        if [[ -n "$search_pattern" ]]; then
+            echo "No sessions found matching '$search_pattern'" >&2
+        else
+            echo "No sessions found" >&2
+        fi
         return 1
     }
 

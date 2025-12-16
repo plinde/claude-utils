@@ -16,6 +16,7 @@ claude-sessions [options] [count]
 | `-a, --all` | Include agent/subagent sessions |
 | `-s, --short` | Use shortened paths (gh:, ws:, ~/) |
 | `-v, --verbose` | Show extra info (refs, file path, message count) |
+| `-g, --grep KEYWORD` | Search sessions for keyword (case-insensitive) |
 | `-j, --json` | Output as JSON (one object per line) |
 | `--here` | Only show sessions for current directory |
 | `-h, --help` | Show help |
@@ -69,4 +70,22 @@ Dec 16 12:17 323.9K  gh:acme/webapp
              └─ Add authentication middleware to Express app
              ▶  git status
                 56d2469f-acb8-4b82-9741-7fc81693d0d8
+```
+
+### Search sessions
+
+```
+$ claude-sessions -g docker
+Dec 15 14:22  89.4K  /Users/jane/workspace/github.com/acme/webapp
+             └─ Configure Docker multi-stage build for production
+             ▶  run the build
+                a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Dec 14 09:15 156.2K  /Users/jane/workspace/github.com/acme/infra-terraform
+             └─ Add ECS Fargate cluster with Docker support
+             ▶  apply the changes
+                b2c3d4e5-f6a7-8901-bcde-f23456789012
+Dec 12 16:45  42.1K  /Users/jane/workspace/github.com/acme/docs
+             └─ Document Docker deployment workflow
+             ▶  commit this
+                c3d4e5f6-a7b8-9012-cdef-345678901234
 ```

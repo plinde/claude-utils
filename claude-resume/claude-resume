@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# claude-resume - Resume a Claude Code session by ID
+#
+# Usage: claude-resume <session-id>
+#
+# Finds the session, changes to its project directory, and resumes.
+# Accepts partial session IDs (matches from start).
+#
+
+set -e
+
+PROJECTS_DIR="${HOME}/.claude/projects"
+
+usage() {
+    cat <<'EOF'
+Usage: claude-resume <session-id>
+
+Resume a Claude Code session by ID (full or partial).
+
+Examples:
+  claude-resume 60215d77-6ac3-4cf8-9a55-18c67aaca6bd
+  claude-resume 60215d77
+  claude-resume 602
+EOF
+}
+
+[[ -z "$1" ]] && { usage; exit 1; }
+[[ "$1" == "-h" || "$1" == "--help" ]] && { usage; exit 0; }
+
+session_id="$1"
+
+# Find matching session file
+matches=$(find "$PROJECTS_DIR" -name "${session_id}*.jsonl" -type f 2>/dev/null)
+match_count=$(echo "$matches" | grep -c . 2>/dev/null || echo 0)
+
+if [[ $match_count -eq 0 ]]; then
+    echo "No session found matching '$session_id'" >&2
+    exit 1
+elif [[ $match_count -gt 1 ]]; then
+    echo "Multiple sessions match '$session_id':" >&2
+    echo "$matches" | while read -r f; do
+        basename "$f" .jsonl
+    done >&2
+    exit 1
+fi
+
+session_file="$matches"
+full_session_id=$(basename "$session_file" .jsonl)
+
+# Extract project directory from session
+project_dir=$(grep -m1 '"cwd"' "$session_file" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null)
+
+if [[ -z "$project_dir" ]]; then
+    echo "Could not determine project directory from session" >&2
+    exit 1
+fi
+
+if [[ ! -d "$project_dir" ]]; then
+    echo "Project directory no longer exists: $project_dir" >&2
+    exit 1
+fi
+
+# Resume session in project directory
+cd "$project_dir"
+exec claude --resume "$full_session_id"

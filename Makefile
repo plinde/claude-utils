@@ -2,7 +2,7 @@
 
 REPO_DIR := $(shell pwd)
 BIN_DIR := $(HOME)/bin
-EXECUTABLES := claude-sessions
+EXECUTABLES := claude-sessions claude-resume
 
 .PHONY: all help install uninstall check clean test
 

@@ -7,6 +7,7 @@ Tools for humans.
 | Tool | Description |
 |------|-------------|
 | [`claude-sessions`](claude-sessions/) | Browse recent Claude Code sessions from `~/.claude/projects` |
+| [`claude-resume`](claude-resume/) | Resume a Claude Code session by ID |
 
 ## Installation
 

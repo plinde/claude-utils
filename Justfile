@@ -2,7 +2,7 @@
 
 repo_dir := justfile_directory()
 bin_dir := env_var('HOME') / "bin"
-executables := "claude-sessions"
+executables := "claude-sessions claude-resume"
 
 # Show available recipes
 default:
