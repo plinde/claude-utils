@@ -5,7 +5,8 @@
 #
 # Usage:
 #   ccpm discover                                   # Import installed marketplaces
-#   ccpm update [org/repo] [--dry-run]             # Update plugins from marketplace(s)
+#   ccpm update [org/repo]                         # Fetch latest catalogs, show changes
+#   ccpm upgrade [org/repo] [--dry-run]            # Update + reinstall changed plugins
 #   ccpm add <org/repo> <alias>                    # Add marketplace mapping
 #   ccpm remove <org/repo>                         # Remove marketplace mapping
 #   ccpm list                                      # List configured marketplaces
@@ -277,8 +278,79 @@ get_changed_plugins() {
         done
 }
 
-# Update plugins for given aliases
+# Update marketplace catalogs (like apt update)
+# Returns changed plugins info but doesn't reinstall
 do_update() {
+    local aliases=("$@")
+
+    echo -e "${BLUE}=== Fetching marketplace updates ===${NC}"
+    echo
+
+    local total_available=0
+
+    for alias in "${aliases[@]}"; do
+        local marketplace_dir="$PLUGINS_DIR/$alias"
+
+        if [[ ! -d "$marketplace_dir" ]]; then
+            echo -e "  ${DIM}$alias: not installed, skipping${NC}"
+            continue
+        fi
+
+        # Get current commit hash
+        local old_hash
+        old_hash=$(git -C "$marketplace_dir" rev-parse HEAD 2>/dev/null || echo "")
+
+        if [[ -z "$old_hash" ]]; then
+            echo -e "  ${YELLOW}$alias: not a git repo, skipping${NC}"
+            continue
+        fi
+
+        echo -n "  $alias... "
+
+        # Update the marketplace
+        claude plugin marketplace update "$alias" >/dev/null 2>&1 || true
+
+        # Get new commit hash
+        local new_hash
+        new_hash=$(git -C "$marketplace_dir" rev-parse HEAD 2>/dev/null || echo "")
+
+        if [[ "$old_hash" == "$new_hash" ]]; then
+            echo -e "${DIM}up to date${NC}"
+            continue
+        fi
+
+        # Get list of changed plugins
+        local changed
+        changed=$(get_changed_plugins "$marketplace_dir" "$old_hash" "$new_hash")
+
+        if [[ -z "$changed" ]]; then
+            echo -e "${DIM}updated (no plugin changes)${NC}"
+            continue
+        fi
+
+        local count
+        count=$(echo "$changed" | wc -l | tr -d ' ')
+        echo -e "${GREEN}${count} plugin(s) can be upgraded${NC}"
+        ((total_available += count))
+
+        # List changed plugins
+        while IFS= read -r plugin_name; do
+            [[ -z "$plugin_name" ]] && continue
+            echo -e "    ${DIM}$plugin_name${NC}"
+        done <<< "$changed"
+    done
+
+    echo
+    if [[ $total_available -eq 0 ]]; then
+        echo -e "${DIM}All plugins up to date.${NC}"
+    else
+        echo -e "${YELLOW}${total_available} plugin(s) can be upgraded.${NC} Run 'ccpm upgrade' to install."
+    fi
+}
+
+# Upgrade plugins (like apt upgrade)
+# Fetches updates and reinstalls changed plugins
+do_upgrade() {
     local dry_run="$1"
     shift
     local aliases=("$@")
@@ -288,7 +360,7 @@ do_update() {
         echo
     fi
 
-    echo -e "${BLUE}=== Claude Code Plugin Manager ===${NC}"
+    echo -e "${BLUE}=== Upgrading plugins ===${NC}"
     echo
 
     local total_updated=0
@@ -338,7 +410,7 @@ do_update() {
 
         local count
         count=$(echo "$changed" | wc -l | tr -d ' ')
-        echo -e "${GREEN}${count} plugin(s) changed${NC}"
+        echo -e "${GREEN}${count} plugin(s) to upgrade${NC}"
         any_changes=true
 
         # Reinstall changed plugins
@@ -353,7 +425,7 @@ do_update() {
                 # Uninstall and reinstall
                 if claude plugin uninstall "$plugin_name@$alias" >/dev/null 2>&1; then
                     if claude plugin install "$plugin_name@$alias" >/dev/null 2>&1; then
-                        echo -e "${GREEN}updated${NC}"
+                        echo -e "${GREEN}upgraded${NC}"
                         ((total_updated++))
                     else
                         echo "failed to install"
@@ -375,12 +447,74 @@ do_update() {
     if [[ "$any_changes" == false ]]; then
         echo -e "${DIM}All plugins up to date.${NC}"
     else
-        echo -e "${GREEN}Done!${NC} Updated $total_updated plugin(s)."
+        echo -e "${GREEN}Done!${NC} Upgraded $total_updated plugin(s)."
     fi
 }
 
-# Update command
+# Get target aliases from repos or all configured
+get_target_aliases() {
+    local target_repos=("$@")
+    local target_aliases=()
+
+    if [[ ${#target_repos[@]} -gt 0 ]]; then
+        for repo in "${target_repos[@]}"; do
+            local alias
+            alias=$(get_alias "$repo")
+            if [[ -z "$alias" ]]; then
+                echo -e "${RED}Error:${NC} Unknown marketplace '$repo'" >&2
+                echo "Run 'ccpm discover' or add it with: ccpm add $repo <alias>" >&2
+                return 1
+            fi
+            target_aliases+=("$alias")
+        done
+    else
+        # No specific repos, use all configured
+        while IFS= read -r repo; do
+            [[ -z "$repo" ]] && continue
+            local alias
+            alias=$(get_alias "$repo")
+            [[ -n "$alias" ]] && target_aliases+=("$alias")
+        done < <(get_all_repos)
+    fi
+
+    if [[ ${#target_aliases[@]} -eq 0 ]]; then
+        echo "No marketplaces configured." >&2
+        echo "Run 'ccpm discover' to import installed marketplaces." >&2
+        echo "Or add one with: ccpm add <org/repo> <alias>" >&2
+        return 1
+    fi
+
+    printf '%s\n' "${target_aliases[@]}"
+}
+
+# Update command (fetch catalogs, show available upgrades)
 cmd_update() {
+    local target_repos=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            */*)
+                target_repos+=("$1")
+                shift
+                ;;
+            *)
+                echo -e "${RED}Error:${NC} Unknown argument '$1'"
+                return 1
+                ;;
+        esac
+    done
+
+    local target_aliases
+    if ! target_aliases=$(get_target_aliases "${target_repos[@]+"${target_repos[@]}"}"); then
+        return 1
+    fi
+
+    # shellcheck disable=SC2086
+    do_update $target_aliases
+}
+
+# Upgrade command (update + reinstall changed plugins)
+cmd_upgrade() {
     local dry_run=false
     local target_repos=()
 
@@ -401,37 +535,13 @@ cmd_update() {
         esac
     done
 
-    # Convert repos to aliases
-    local target_aliases=()
-    if [[ ${#target_repos[@]} -gt 0 ]]; then
-        for repo in "${target_repos[@]}"; do
-            local alias
-            alias=$(get_alias "$repo")
-            if [[ -z "$alias" ]]; then
-                echo -e "${RED}Error:${NC} Unknown marketplace '$repo'"
-                echo "Run 'ccpm discover' or add it with: ccpm add $repo <alias>"
-                return 1
-            fi
-            target_aliases+=("$alias")
-        done
-    else
-        # No specific repos, use all configured
-        while IFS= read -r repo; do
-            [[ -z "$repo" ]] && continue
-            local alias
-            alias=$(get_alias "$repo")
-            [[ -n "$alias" ]] && target_aliases+=("$alias")
-        done < <(get_all_repos)
-    fi
-
-    if [[ ${#target_aliases[@]} -eq 0 ]]; then
-        echo "No marketplaces configured."
-        echo "Run 'ccpm discover' to import installed marketplaces."
-        echo "Or add one with: ccpm add <org/repo> <alias>"
+    local target_aliases
+    if ! target_aliases=$(get_target_aliases "${target_repos[@]+"${target_repos[@]}"}"); then
         return 1
     fi
 
-    do_update "$dry_run" "${target_aliases[@]}"
+    # shellcheck disable=SC2086
+    do_upgrade "$dry_run" $target_aliases
 }
 
 # Show usage
@@ -441,7 +551,8 @@ Usage: ccpm [options] <command>
 
 Commands:
   discover               Discover and import installed marketplaces
-  update [org/repo]      Update plugins from configured marketplace(s)
+  update [org/repo]      Fetch latest catalogs, show available upgrades
+  upgrade [org/repo]     Fetch + reinstall changed plugins
   add <org/repo> <alias> Add marketplace to config
   remove <org/repo>      Remove marketplace from config
   list                   List configured marketplaces
@@ -450,13 +561,14 @@ Commands:
 
 Options:
   --config <path>        Use alternate config file (default: $DEFAULT_CONFIG_FILE)
-  --dry-run              Show what would be updated without making changes (for update)
+  --dry-run              Show what would be upgraded without making changes (for upgrade)
 
 Examples:
   ccpm discover                              # Import installed marketplaces
-  ccpm update                                # Update all configured
-  ccpm update anthropics/skills              # Update specific marketplace
-  ccpm update --dry-run                      # Dry run
+  ccpm update                                # Check for updates (like apt update)
+  ccpm upgrade                               # Install updates (like apt upgrade)
+  ccpm upgrade --dry-run                     # Preview what would be upgraded
+  ccpm upgrade anthropics/skills             # Upgrade specific marketplace
   ccpm add anthropics/skills anthropic-skills
   ccpm list
 EOF
@@ -501,6 +613,9 @@ main() {
             ;;
         update)
             cmd_update "$@"
+            ;;
+        upgrade)
+            cmd_upgrade "$@"
             ;;
         add)
             if [[ $# -lt 2 ]]; then
