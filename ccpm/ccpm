@@ -259,6 +259,24 @@ cmd_list() {
     done < <(get_all_repos)
 }
 
+# Get list of changed plugin directories between two commits
+get_changed_plugins() {
+    local marketplace_dir="$1"
+    local old_hash="$2"
+    local new_hash="$3"
+
+    # Get list of changed files, extract top-level directories that are plugins
+    git -C "$marketplace_dir" diff --name-only "$old_hash" "$new_hash" 2>/dev/null | \
+        cut -d'/' -f1 | \
+        sort -u | \
+        while read -r dir; do
+            # Only include if it's a plugin directory
+            if [[ -d "$marketplace_dir/$dir/.claude-plugin" ]]; then
+                echo "$dir"
+            fi
+        done
+}
+
 # Update plugins for given aliases
 do_update() {
     local dry_run="$1"
@@ -273,43 +291,61 @@ do_update() {
     echo -e "${BLUE}=== Claude Code Plugin Manager ===${NC}"
     echo
 
-    # Step 1: Update marketplace catalogs
-    echo -e "${YELLOW}Updating marketplace catalogs...${NC}"
-    for alias in "${aliases[@]}"; do
-        if [[ -d "$PLUGINS_DIR/$alias" ]]; then
-            echo "  Updating $alias..."
-            if [[ "$dry_run" == false ]]; then
-                claude plugin marketplace update "$alias" 2>/dev/null || echo "    Warning: Failed to update $alias"
-            fi
-        else
-            echo "  Skipping $alias (not installed)"
-        fi
-    done
-    echo
-
-    # Step 2: Find and reinstall plugins
-    echo -e "${YELLOW}Reinstalling plugins...${NC}"
     local total_updated=0
+    local any_changes=false
 
     for alias in "${aliases[@]}"; do
         local marketplace_dir="$PLUGINS_DIR/$alias"
 
         if [[ ! -d "$marketplace_dir" ]]; then
+            echo -e "  ${DIM}$alias: not installed, skipping${NC}"
             continue
         fi
 
-        echo -e "\n${BLUE}[$alias]${NC}"
+        # Get current commit hash
+        local old_hash
+        old_hash=$(git -C "$marketplace_dir" rev-parse HEAD 2>/dev/null || echo "")
 
-        # Find all plugin directories
-        for plugin_dir in "$marketplace_dir"/*/; do
-            local plugin_name
-            plugin_name=$(basename "$plugin_dir")
+        if [[ -z "$old_hash" ]]; then
+            echo -e "  ${YELLOW}$alias: not a git repo, skipping${NC}"
+            continue
+        fi
 
-            # Skip hidden directories and non-plugin dirs
-            [[ "$plugin_name" == .* ]] && continue
-            [[ ! -d "$plugin_dir/.claude-plugin" ]] && continue
+        echo -n "  $alias... "
 
-            echo -n "  $plugin_name... "
+        if [[ "$dry_run" == false ]]; then
+            # Update the marketplace
+            claude plugin marketplace update "$alias" >/dev/null 2>&1 || true
+        fi
+
+        # Get new commit hash
+        local new_hash
+        new_hash=$(git -C "$marketplace_dir" rev-parse HEAD 2>/dev/null || echo "")
+
+        if [[ "$old_hash" == "$new_hash" ]]; then
+            echo -e "${DIM}up to date${NC}"
+            continue
+        fi
+
+        # Get list of changed plugins
+        local changed
+        changed=$(get_changed_plugins "$marketplace_dir" "$old_hash" "$new_hash")
+
+        if [[ -z "$changed" ]]; then
+            echo -e "${DIM}no plugin changes${NC}"
+            continue
+        fi
+
+        local count
+        count=$(echo "$changed" | wc -l | tr -d ' ')
+        echo -e "${GREEN}${count} plugin(s) changed${NC}"
+        any_changes=true
+
+        # Reinstall changed plugins
+        while IFS= read -r plugin_name; do
+            [[ -z "$plugin_name" ]] && continue
+
+            echo -n "    $plugin_name... "
 
             if [[ "$dry_run" == true ]]; then
                 echo "would reinstall"
@@ -332,11 +368,15 @@ do_update() {
                     fi
                 fi
             fi
-        done
+        done <<< "$changed"
     done
 
     echo
-    echo -e "${GREEN}Done!${NC} Updated $total_updated plugins."
+    if [[ "$any_changes" == false ]]; then
+        echo -e "${DIM}All plugins up to date.${NC}"
+    else
+        echo -e "${GREEN}Done!${NC} Updated $total_updated plugin(s)."
+    fi
 }
 
 # Update command
