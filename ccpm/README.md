@@ -1,6 +1,6 @@
 # ccpm - Claude Code Plugin Manager
 
-An opinionated tool for managing Claude Code plugin marketplaces.
+A wrapper around `claude plugin` commands for managing multiple marketplaces. You can stop using ccpm anytime and continue using the native Claude Code plugin ecosystem directly.
 
 ## Features
 

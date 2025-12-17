@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ccpm - Claude Code Plugin Manager
 #
-# An opinionated tool for managing Claude Code plugin marketplaces.
+# A wrapper around `claude plugin` commands for managing multiple marketplaces.
 #
 # Usage:
 #   ccpm discover                                   # Import installed marketplaces
