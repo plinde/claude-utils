@@ -1,0 +1,496 @@
+#!/usr/bin/env bash
+# ccpm - Claude Code Plugin Manager
+#
+# An opinionated tool for managing Claude Code plugin marketplaces.
+#
+# Usage:
+#   ccpm discover                                   # Import installed marketplaces
+#   ccpm update [org/repo] [--dry-run]             # Update plugins from marketplace(s)
+#   ccpm add <org/repo> <alias>                    # Add marketplace mapping
+#   ccpm remove <org/repo>                         # Remove marketplace mapping
+#   ccpm list                                      # List configured marketplaces
+#   ccpm config                                    # Show config file path
+#
+# Options:
+#   --config <path>        Use alternate config file
+#
+# Configuration: ~/.config/ccpm.yaml (default)
+
+set -euo pipefail
+
+# Default config location (can be overridden with --config)
+DEFAULT_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
+DEFAULT_CONFIG_FILE="$DEFAULT_CONFIG_DIR/ccpm.yaml"
+CONFIG_FILE="$DEFAULT_CONFIG_FILE"
+PLUGINS_DIR="$HOME/.claude/plugins/marketplaces"
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+# Ensure config directory exists
+ensure_config() {
+    local config_dir
+    config_dir=$(dirname "$CONFIG_FILE")
+    if [[ ! -d "$config_dir" ]]; then
+        mkdir -p "$config_dir"
+    fi
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << 'EOF'
+# ccpm - Claude Code Plugin Manager configuration
+# Format: repo: alias
+marketplaces: {}
+EOF
+    fi
+}
+
+# Show config path
+cmd_config() {
+    echo -e "${BLUE}Config file:${NC} $CONFIG_FILE"
+    if [[ "$CONFIG_FILE" != "$DEFAULT_CONFIG_FILE" ]]; then
+        echo -e "${YELLOW}(overridden from default: $DEFAULT_CONFIG_FILE)${NC}"
+    fi
+    echo
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo -e "${GREEN}Status:${NC} exists"
+        echo -e "${BLUE}Contents:${NC}"
+        cat "$CONFIG_FILE"
+    else
+        echo -e "${YELLOW}Status:${NC} not created yet (will be created on first 'add' or 'discover')"
+    fi
+}
+
+# Get alias for a repo from config
+get_alias() {
+    local repo="$1"
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo ""
+        return
+    fi
+    # Parse YAML manually (avoid yq dependency)
+    grep -A1000 "^marketplaces:" "$CONFIG_FILE" 2>/dev/null | \
+        grep "^  ${repo}:" 2>/dev/null | \
+        sed 's/.*: *//' | \
+        tr -d '"' | \
+        tr -d "'" || echo ""
+}
+
+# Get all configured repos
+get_all_repos() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        return
+    fi
+    grep -A1000 "^marketplaces:" "$CONFIG_FILE" 2>/dev/null | \
+        grep "^  [a-zA-Z]" 2>/dev/null | \
+        sed 's/:.*//' | \
+        sed 's/^  //' || true
+}
+
+# Parse org/repo from git remote URL
+parse_repo_from_remote() {
+    local url="$1"
+    # Handle git@github.com:org/repo.git
+    if [[ "$url" =~ git@github\.com:([^/]+)/([^/.]+)(\.git)?$ ]]; then
+        echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+        return
+    fi
+    # Handle https://github.com/org/repo.git
+    if [[ "$url" =~ https://github\.com/([^/]+)/([^/.]+)(\.git)?$ ]]; then
+        echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+        return
+    fi
+    echo ""
+}
+
+# Discover installed marketplaces and import to config
+cmd_discover() {
+    echo -e "${BLUE}=== Discovering Installed Marketplaces ===${NC}"
+    echo
+
+    if [[ ! -d "$PLUGINS_DIR" ]]; then
+        echo "No marketplaces directory found at $PLUGINS_DIR"
+        return 1
+    fi
+
+    ensure_config
+
+    local discovered=0
+    local imported=0
+
+    for dir in "$PLUGINS_DIR"/*/; do
+        [[ ! -d "$dir" ]] && continue
+
+        local alias
+        alias=$(basename "$dir")
+        ((discovered++))
+
+        # Get git remote
+        local remote
+        remote=$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")
+
+        if [[ -z "$remote" ]]; then
+            echo -e "  ${YELLOW}⚠${NC}  $alias ${DIM}(no git remote, skipping)${NC}"
+            continue
+        fi
+
+        # Parse org/repo from remote
+        local repo
+        repo=$(parse_repo_from_remote "$remote")
+
+        if [[ -z "$repo" ]]; then
+            echo -e "  ${YELLOW}⚠${NC}  $alias ${DIM}(could not parse repo from: $remote)${NC}"
+            continue
+        fi
+
+        # Check if already in config
+        local existing_alias
+        existing_alias=$(get_alias "$repo")
+
+        if [[ -n "$existing_alias" ]]; then
+            echo -e "  ${DIM}✓${NC}  $alias ${DIM}($repo already configured)${NC}"
+        else
+            # Add to config
+            add_marketplace_to_config "$repo" "$alias"
+            echo -e "  ${GREEN}+${NC}  $alias ${DIM}($repo)${NC}"
+            ((imported++))
+        fi
+    done
+
+    echo
+    echo -e "Discovered ${discovered} marketplace(s), imported ${GREEN}${imported}${NC} new."
+}
+
+# Add marketplace to config (internal helper)
+add_marketplace_to_config() {
+    local repo="$1"
+    local alias="$2"
+
+    if grep -q "^  ${repo}:" "$CONFIG_FILE" 2>/dev/null; then
+        # Update existing
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s|^  ${repo}:.*|  ${repo}: ${alias}|" "$CONFIG_FILE"
+        else
+            sed -i "s|^  ${repo}:.*|  ${repo}: ${alias}|" "$CONFIG_FILE"
+        fi
+    else
+        # Add new entry
+        if grep -q "^marketplaces: {}" "$CONFIG_FILE"; then
+            # Replace empty marketplaces
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                sed -i '' "s|^marketplaces: {}|marketplaces:\\
+  ${repo}: ${alias}|" "$CONFIG_FILE"
+            else
+                sed -i "s|^marketplaces: {}|marketplaces:\\n  ${repo}: ${alias}|" "$CONFIG_FILE"
+            fi
+        else
+            # Append to marketplaces section
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                sed -i '' "/^marketplaces:/a\\
+  ${repo}: ${alias}
+" "$CONFIG_FILE"
+            else
+                sed -i "/^marketplaces:/a\\  ${repo}: ${alias}" "$CONFIG_FILE"
+            fi
+        fi
+    fi
+}
+
+# Add a marketplace mapping
+cmd_add() {
+    local repo="$1"
+    local alias="$2"
+
+    ensure_config
+    add_marketplace_to_config "$repo" "$alias"
+    echo -e "${GREEN}Added${NC} ${repo} -> ${alias}"
+}
+
+# Remove a marketplace mapping
+cmd_remove() {
+    local repo="$1"
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "No config file found"
+        return 1
+    fi
+
+    if ! grep -q "^  ${repo}:" "$CONFIG_FILE" 2>/dev/null; then
+        echo "Marketplace not found: $repo"
+        return 1
+    fi
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "/^  ${repo}:/d" "$CONFIG_FILE"
+    else
+        sed -i "/^  ${repo}:/d" "$CONFIG_FILE"
+    fi
+    echo -e "${GREEN}Removed${NC} ${repo}"
+}
+
+# List configured marketplaces
+cmd_list() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "No marketplaces configured."
+        echo "Run 'ccpm discover' to import installed marketplaces."
+        echo "Or add one with: ccpm add <org/repo> <alias>"
+        return
+    fi
+
+    echo -e "${BLUE}Configured marketplaces:${NC}"
+    echo
+    printf "  %-50s %-25s %s\n" "REPO" "ALIAS" "STATUS"
+    printf "  %-50s %-25s %s\n" "----" "-----" "------"
+
+    while IFS= read -r repo; do
+        [[ -z "$repo" ]] && continue
+        local alias
+        alias=$(get_alias "$repo")
+        local status=""
+        if [[ -d "$PLUGINS_DIR/$alias" ]]; then
+            status="${GREEN}installed${NC}"
+        else
+            status="${YELLOW}not installed${NC}"
+        fi
+        printf "  %-50s %-25s %b\n" "$repo" "$alias" "$status"
+    done < <(get_all_repos)
+}
+
+# Update plugins for given aliases
+do_update() {
+    local dry_run="$1"
+    shift
+    local aliases=("$@")
+
+    if [[ "$dry_run" == true ]]; then
+        echo "DRY RUN MODE - no changes will be made"
+        echo
+    fi
+
+    echo -e "${BLUE}=== Claude Code Plugin Manager ===${NC}"
+    echo
+
+    # Step 1: Update marketplace catalogs
+    echo -e "${YELLOW}Updating marketplace catalogs...${NC}"
+    for alias in "${aliases[@]}"; do
+        if [[ -d "$PLUGINS_DIR/$alias" ]]; then
+            echo "  Updating $alias..."
+            if [[ "$dry_run" == false ]]; then
+                claude plugin marketplace update "$alias" 2>/dev/null || echo "    Warning: Failed to update $alias"
+            fi
+        else
+            echo "  Skipping $alias (not installed)"
+        fi
+    done
+    echo
+
+    # Step 2: Find and reinstall plugins
+    echo -e "${YELLOW}Reinstalling plugins...${NC}"
+    local total_updated=0
+
+    for alias in "${aliases[@]}"; do
+        local marketplace_dir="$PLUGINS_DIR/$alias"
+
+        if [[ ! -d "$marketplace_dir" ]]; then
+            continue
+        fi
+
+        echo -e "\n${BLUE}[$alias]${NC}"
+
+        # Find all plugin directories
+        for plugin_dir in "$marketplace_dir"/*/; do
+            local plugin_name
+            plugin_name=$(basename "$plugin_dir")
+
+            # Skip hidden directories and non-plugin dirs
+            [[ "$plugin_name" == .* ]] && continue
+            [[ ! -d "$plugin_dir/.claude-plugin" ]] && continue
+
+            echo -n "  $plugin_name... "
+
+            if [[ "$dry_run" == true ]]; then
+                echo "would reinstall"
+            else
+                # Uninstall and reinstall
+                if claude plugin uninstall "$plugin_name@$alias" >/dev/null 2>&1; then
+                    if claude plugin install "$plugin_name@$alias" >/dev/null 2>&1; then
+                        echo -e "${GREEN}updated${NC}"
+                        ((total_updated++))
+                    else
+                        echo "failed to install"
+                    fi
+                else
+                    # Maybe not installed, try just installing
+                    if claude plugin install "$plugin_name@$alias" >/dev/null 2>&1; then
+                        echo -e "${GREEN}installed${NC}"
+                        ((total_updated++))
+                    else
+                        echo "failed"
+                    fi
+                fi
+            fi
+        done
+    done
+
+    echo
+    echo -e "${GREEN}Done!${NC} Updated $total_updated plugins."
+}
+
+# Update command
+cmd_update() {
+    local dry_run=false
+    local target_repos=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            */*)
+                target_repos+=("$1")
+                shift
+                ;;
+            *)
+                echo -e "${RED}Error:${NC} Unknown argument '$1'"
+                return 1
+                ;;
+        esac
+    done
+
+    # Convert repos to aliases
+    local target_aliases=()
+    if [[ ${#target_repos[@]} -gt 0 ]]; then
+        for repo in "${target_repos[@]}"; do
+            local alias
+            alias=$(get_alias "$repo")
+            if [[ -z "$alias" ]]; then
+                echo -e "${RED}Error:${NC} Unknown marketplace '$repo'"
+                echo "Run 'ccpm discover' or add it with: ccpm add $repo <alias>"
+                return 1
+            fi
+            target_aliases+=("$alias")
+        done
+    else
+        # No specific repos, use all configured
+        while IFS= read -r repo; do
+            [[ -z "$repo" ]] && continue
+            local alias
+            alias=$(get_alias "$repo")
+            [[ -n "$alias" ]] && target_aliases+=("$alias")
+        done < <(get_all_repos)
+    fi
+
+    if [[ ${#target_aliases[@]} -eq 0 ]]; then
+        echo "No marketplaces configured."
+        echo "Run 'ccpm discover' to import installed marketplaces."
+        echo "Or add one with: ccpm add <org/repo> <alias>"
+        return 1
+    fi
+
+    do_update "$dry_run" "${target_aliases[@]}"
+}
+
+# Show usage
+usage() {
+    cat << EOF
+Usage: ccpm [options] <command>
+
+Commands:
+  discover               Discover and import installed marketplaces
+  update [org/repo]      Update plugins from configured marketplace(s)
+  add <org/repo> <alias> Add marketplace to config
+  remove <org/repo>      Remove marketplace from config
+  list                   List configured marketplaces
+  config                 Show config file path and contents
+  help                   Show this help
+
+Options:
+  --config <path>        Use alternate config file (default: $DEFAULT_CONFIG_FILE)
+  --dry-run              Show what would be updated without making changes (for update)
+
+Examples:
+  ccpm discover                              # Import installed marketplaces
+  ccpm update                                # Update all configured
+  ccpm update anthropics/skills              # Update specific marketplace
+  ccpm update --dry-run                      # Dry run
+  ccpm add anthropics/skills anthropic-skills
+  ccpm list
+EOF
+}
+
+# Main
+main() {
+    # Pre-parse --config flag (must come before other args)
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --config)
+                shift
+                if [[ $# -lt 1 ]]; then
+                    echo -e "${RED}Error:${NC} --config requires a path argument"
+                    exit 1
+                fi
+                CONFIG_FILE="$1"
+                shift
+                ;;
+            *)
+                args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    set -- "${args[@]+"${args[@]}"}"
+
+    # No arguments - show help
+    if [[ $# -eq 0 ]]; then
+        usage
+        exit 0
+    fi
+
+    # Parse command
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        discover)
+            cmd_discover
+            ;;
+        update)
+            cmd_update "$@"
+            ;;
+        add)
+            if [[ $# -lt 2 ]]; then
+                echo "Usage: ccpm add <org/repo> <alias>"
+                exit 1
+            fi
+            cmd_add "$1" "$2"
+            ;;
+        remove)
+            if [[ $# -lt 1 ]]; then
+                echo "Usage: ccpm remove <org/repo>"
+                exit 1
+            fi
+            cmd_remove "$1"
+            ;;
+        list)
+            cmd_list
+            ;;
+        config)
+            cmd_config
+            ;;
+        help|--help|-h)
+            usage
+            ;;
+        *)
+            echo -e "${RED}Error:${NC} Unknown command '$cmd'"
+            echo "Run 'ccpm help' for usage"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
