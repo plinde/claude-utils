@@ -51,6 +51,11 @@ endef
 $(foreach exe,$(EXECUTABLES),$(eval $(call INSTALL_TOOL,$(exe))))
 
 $(BIN_DIR):
+	@if [ -e "$(BIN_DIR)" ] && [ ! -d "$(BIN_DIR)" ]; then \
+		echo "Error: $(BIN_DIR) exists but is not a directory"; \
+		echo "Manually copy or symlink the tool to somewhere in your PATH"; \
+		exit 1; \
+	fi
 	@mkdir -p $(BIN_DIR)
 
 uninstall: ## Remove all symlinks from ~/bin

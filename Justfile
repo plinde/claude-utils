@@ -34,6 +34,11 @@ install-all:
 
 # Install ccpm
 install-ccpm:
+    @if [ -e "{{ bin_dir }}" ] && [ ! -d "{{ bin_dir }}" ]; then \
+        echo "Error: {{ bin_dir }} exists but is not a directory"; \
+        echo "Manually copy or symlink ccpm/ccpm to somewhere in your PATH"; \
+        exit 1; \
+    fi
     @mkdir -p {{ bin_dir }}
     @if [ ! -x "{{ repo_dir }}/ccpm/ccpm" ]; then \
         echo "Error: ccpm not found"; exit 1; \
@@ -47,6 +52,11 @@ install-ccpm:
 
 # Install claude-sessions
 install-claude-sessions:
+    @if [ -e "{{ bin_dir }}" ] && [ ! -d "{{ bin_dir }}" ]; then \
+        echo "Error: {{ bin_dir }} exists but is not a directory"; \
+        echo "Manually copy or symlink claude-sessions/claude-sessions to somewhere in your PATH"; \
+        exit 1; \
+    fi
     @mkdir -p {{ bin_dir }}
     @if [ ! -x "{{ repo_dir }}/claude-sessions/claude-sessions" ]; then \
         echo "Error: claude-sessions not found"; exit 1; \
@@ -60,6 +70,11 @@ install-claude-sessions:
 
 # Install claude-resume
 install-claude-resume:
+    @if [ -e "{{ bin_dir }}" ] && [ ! -d "{{ bin_dir }}" ]; then \
+        echo "Error: {{ bin_dir }} exists but is not a directory"; \
+        echo "Manually copy or symlink claude-resume/claude-resume to somewhere in your PATH"; \
+        exit 1; \
+    fi
     @mkdir -p {{ bin_dir }}
     @if [ ! -x "{{ repo_dir }}/claude-resume/claude-resume" ]; then \
         echo "Error: claude-resume not found"; exit 1; \
