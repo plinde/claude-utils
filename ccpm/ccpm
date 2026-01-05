@@ -7,9 +7,12 @@
 #   ccpm discover                                   # Import installed marketplaces
 #   ccpm update [org/repo]                         # Fetch latest catalogs, show changes
 #   ccpm upgrade [org/repo] [--dry-run]            # Update + reinstall changed plugins
+#   ccpm search <query> [-v]                       # Search plugins in local repos
+#   ccpm reinstall <plugin@mp> [--dry-run]         # Reinstall specific plugin(s)
+#   ccpm uninstall <plugin@mp>                     # Uninstall specific plugin(s)
 #   ccpm add <org/repo> <alias>                    # Add marketplace mapping
 #   ccpm remove <org/repo>                         # Remove marketplace mapping
-#   ccpm list                                      # List configured marketplaces
+#   ccpm list                                      # List configured marketplaces and plugins
 #   ccpm config                                    # Show config file path
 #
 # Options:
@@ -232,6 +235,58 @@ cmd_remove() {
     echo -e "${GREEN}Removed${NC} ${repo}"
 }
 
+# Get installed plugins for a marketplace alias
+get_installed_plugins_for_marketplace() {
+    local target_alias="$1"
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+
+    if [[ ! -f "$installed_json" ]]; then
+        return
+    fi
+
+    # Parse JSON to find plugins matching @marketplace_alias
+    # Format: "plugin_name@marketplace_alias": [...]
+    jq -r --arg alias "$target_alias" '
+        .plugins // {} | keys[] |
+        select(endswith("@" + $alias)) |
+        split("@")[0]
+    ' "$installed_json" 2>/dev/null | sort
+}
+
+# Get installed plugin info (version and git hash) from installed_plugins.json
+get_installed_plugin_info() {
+    local plugin_name="$1"
+    local marketplace_alias="$2"
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+
+    if [[ ! -f "$installed_json" ]]; then
+        return
+    fi
+
+    # Return "version|githash" format
+    jq -r --arg key "$plugin_name@$marketplace_alias" '
+        .plugins[$key][0] | "\(.version // "")|\(.gitCommitSha // "" | .[0:7])"
+    ' "$installed_json" 2>/dev/null
+}
+
+# Get marketplace git info (commit hash, date)
+get_marketplace_git_info() {
+    local marketplace_dir="$1"
+
+    if [[ ! -d "$marketplace_dir/.git" ]]; then
+        echo ""
+        return
+    fi
+
+    local commit_hash commit_date
+    commit_hash=$(git -C "$marketplace_dir" rev-parse --short HEAD 2>/dev/null || echo "")
+    commit_date=$(git -C "$marketplace_dir" log -1 --format="%cr" 2>/dev/null || echo "")
+
+    if [[ -n "$commit_hash" ]]; then
+        echo "${commit_hash} (${commit_date})"
+    fi
+}
+
 # List configured marketplaces
 cmd_list() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -243,20 +298,53 @@ cmd_list() {
 
     echo -e "${BLUE}Configured marketplaces:${NC}"
     echo
-    printf "  %-50s %-25s %s\n" "REPO" "ALIAS" "STATUS"
-    printf "  %-50s %-25s %s\n" "----" "-----" "------"
 
     while IFS= read -r repo; do
         [[ -z "$repo" ]] && continue
         local alias
         alias=$(get_alias "$repo")
+        local marketplace_dir="$PLUGINS_DIR/$alias"
         local status=""
-        if [[ -d "$PLUGINS_DIR/$alias" ]]; then
+        local git_info=""
+
+        if [[ -d "$marketplace_dir" ]]; then
             status="${GREEN}installed${NC}"
+            git_info=$(get_marketplace_git_info "$marketplace_dir")
         else
             status="${YELLOW}not installed${NC}"
         fi
-        printf "  %-50s %-25s %b\n" "$repo" "$alias" "$status"
+
+        # Print marketplace line
+        printf "  ${BLUE}%s${NC} (%s) [%b]\n" "$alias" "$repo" "$status"
+        if [[ -n "$git_info" ]]; then
+            echo -e "    ${DIM}@ $git_info${NC}"
+        fi
+
+        # Get installed plugins for this marketplace
+        local plugins
+        plugins=$(get_installed_plugins_for_marketplace "$alias")
+
+        if [[ -n "$plugins" ]]; then
+            while IFS= read -r plugin; do
+                [[ -z "$plugin" ]] && continue
+                local plugin_info version git_hash
+                plugin_info=$(get_installed_plugin_info "$plugin" "$alias")
+                version="${plugin_info%|*}"
+                git_hash="${plugin_info#*|}"
+
+                printf "    ${DIM}└─${NC} %s" "$plugin"
+                if [[ -n "$version" ]]; then
+                    printf " ${DIM}v%s${NC}" "$version"
+                fi
+                if [[ -n "$git_hash" ]]; then
+                    printf " ${DIM}@%s${NC}" "$git_hash"
+                fi
+                echo
+            done <<< "$plugins"
+        else
+            echo -e "    ${DIM}(no plugins installed)${NC}"
+        fi
+        echo
     done < <(get_all_repos)
 }
 
@@ -544,6 +632,307 @@ cmd_upgrade() {
     do_upgrade "$dry_run" $target_aliases
 }
 
+# Search for plugins in local marketplace repos
+cmd_search() {
+    local query=""
+    local verbose=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            *)
+                query="$1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$query" ]]; then
+        echo -e "${RED}Error:${NC} No search query specified"
+        echo "Usage: ccpm search <query> [-v|--verbose]"
+        return 1
+    fi
+
+    echo -e "${BLUE}=== Searching for '$query' ===${NC}"
+    echo
+
+    local found=0
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+
+    # Search through each marketplace
+    for marketplace_dir in "$PLUGINS_DIR"/*/; do
+        [[ ! -d "$marketplace_dir" ]] && continue
+
+        local marketplace_alias
+        marketplace_alias=$(basename "$marketplace_dir")
+
+        # Search through plugin directories in this marketplace
+        for plugin_dir in "$marketplace_dir"/*/; do
+            [[ ! -d "$plugin_dir" ]] && continue
+            [[ ! -d "$plugin_dir/.claude-plugin" ]] && continue
+
+            local plugin_name
+            plugin_name=$(basename "$plugin_dir")
+
+            # Skip hidden directories and the marketplace's own .claude-plugin
+            [[ "$plugin_name" == .* ]] && continue
+
+            # Get plugin info from plugin.json
+            local plugin_json="$plugin_dir/.claude-plugin/plugin.json"
+            local description=""
+            local version=""
+
+            if [[ -f "$plugin_json" ]]; then
+                description=$(jq -r '.description // ""' "$plugin_json" 2>/dev/null || echo "")
+                version=$(jq -r '.version // ""' "$plugin_json" 2>/dev/null || echo "")
+            fi
+
+            # Match against name or description (case-insensitive)
+            local match=false
+            if echo "$plugin_name" | grep -qi "$query"; then
+                match=true
+            elif echo "$description" | grep -qi "$query"; then
+                match=true
+            fi
+
+            if [[ "$match" == true ]]; then
+                ((found++))
+
+                # Check if installed
+                local installed_marker=""
+                if [[ -f "$installed_json" ]] && jq -e --arg key "$plugin_name@$marketplace_alias" '.plugins[$key]' "$installed_json" >/dev/null 2>&1; then
+                    installed_marker=" ${GREEN}[installed]${NC}"
+                fi
+
+                # Print result
+                printf "  ${BLUE}%s${NC}@%s" "$plugin_name" "$marketplace_alias"
+                if [[ -n "$version" ]]; then
+                    printf " ${DIM}v%s${NC}" "$version"
+                fi
+                echo -e "$installed_marker"
+
+                if [[ "$verbose" == true ]] && [[ -n "$description" ]]; then
+                    echo -e "    ${DIM}$description${NC}"
+                fi
+            fi
+        done
+    done
+
+    echo
+    if [[ $found -eq 0 ]]; then
+        echo -e "${DIM}No plugins found matching '$query'${NC}"
+    else
+        echo -e "Found ${GREEN}$found${NC} plugin(s) matching '$query'"
+    fi
+}
+
+# Uninstall one or more plugins
+cmd_uninstall() {
+    local plugins=("$@")
+
+    if [[ ${#plugins[@]} -eq 0 ]]; then
+        echo -e "${RED}Error:${NC} No plugins specified"
+        echo "Usage: ccpm uninstall <plugin@marketplace> [plugin@marketplace...]"
+        echo "       ccpm uninstall --all <marketplace-alias>"
+        return 1
+    fi
+
+    # Check for --all mode (uninstall all plugins from a marketplace)
+    if [[ "${plugins[0]}" == "--all" ]]; then
+        if [[ ${#plugins[@]} -lt 2 ]]; then
+            echo -e "${RED}Error:${NC} --all requires a marketplace alias"
+            echo "Usage: ccpm uninstall --all <marketplace-alias>"
+            return 1
+        fi
+        local marketplace_alias="${plugins[1]}"
+        local installed
+        installed=$(get_installed_plugins_for_marketplace "$marketplace_alias")
+
+        if [[ -z "$installed" ]]; then
+            echo -e "${YELLOW}No plugins installed from $marketplace_alias${NC}"
+            return 0
+        fi
+
+        plugins=()
+        while IFS= read -r plugin; do
+            [[ -z "$plugin" ]] && continue
+            plugins+=("$plugin@$marketplace_alias")
+        done <<< "$installed"
+    fi
+
+    echo -e "${BLUE}=== Uninstalling plugins ===${NC}"
+    echo
+
+    local success=0
+    local failed=0
+
+    for plugin_spec in "${plugins[@]}"; do
+        # Parse plugin@marketplace format
+        local plugin_name marketplace_alias
+
+        if [[ "$plugin_spec" == *@* ]]; then
+            plugin_name="${plugin_spec%@*}"
+            marketplace_alias="${plugin_spec#*@}"
+        else
+            # Try to find the marketplace for this plugin
+            plugin_name="$plugin_spec"
+            marketplace_alias=$(find_marketplace_for_plugin "$plugin_name")
+
+            if [[ -z "$marketplace_alias" ]]; then
+                echo -e "  ${RED}✗${NC} $plugin_name - not found in any marketplace"
+                ((failed++))
+                continue
+            fi
+        fi
+
+        echo -n "  $plugin_name@$marketplace_alias... "
+
+        if claude plugin uninstall "$plugin_name@$marketplace_alias" >/dev/null 2>&1; then
+            echo -e "${GREEN}uninstalled${NC}"
+            ((success++))
+        else
+            echo -e "${RED}failed${NC}"
+            ((failed++))
+        fi
+    done
+
+    echo
+    if [[ $failed -eq 0 ]]; then
+        echo -e "${GREEN}Done!${NC} Uninstalled $success plugin(s)."
+    else
+        echo -e "${YELLOW}Done.${NC} Uninstalled $success, failed $failed."
+        return 1
+    fi
+}
+
+# Reinstall one or more plugins
+cmd_reinstall() {
+    local dry_run=false
+    local plugins=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            *)
+                plugins+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [[ ${#plugins[@]} -eq 0 ]]; then
+        echo -e "${RED}Error:${NC} No plugins specified"
+        echo "Usage: ccpm reinstall <plugin@marketplace> [plugin@marketplace...]"
+        echo "       ccpm reinstall --all <marketplace-alias>"
+        return 1
+    fi
+
+    # Check for --all mode (reinstall all plugins from a marketplace)
+    if [[ "${plugins[0]}" == "--all" ]]; then
+        if [[ ${#plugins[@]} -lt 2 ]]; then
+            echo -e "${RED}Error:${NC} --all requires a marketplace alias"
+            echo "Usage: ccpm reinstall --all <marketplace-alias>"
+            return 1
+        fi
+        local marketplace_alias="${plugins[1]}"
+        local installed
+        installed=$(get_installed_plugins_for_marketplace "$marketplace_alias")
+
+        if [[ -z "$installed" ]]; then
+            echo -e "${YELLOW}No plugins installed from $marketplace_alias${NC}"
+            return 0
+        fi
+
+        plugins=()
+        while IFS= read -r plugin; do
+            [[ -z "$plugin" ]] && continue
+            plugins+=("$plugin@$marketplace_alias")
+        done <<< "$installed"
+    fi
+
+    if [[ "$dry_run" == true ]]; then
+        echo "DRY RUN MODE - no changes will be made"
+        echo
+    fi
+
+    echo -e "${BLUE}=== Reinstalling plugins ===${NC}"
+    echo
+
+    local success=0
+    local failed=0
+
+    for plugin_spec in "${plugins[@]}"; do
+        # Parse plugin@marketplace format
+        local plugin_name marketplace_alias
+
+        if [[ "$plugin_spec" == *@* ]]; then
+            plugin_name="${plugin_spec%@*}"
+            marketplace_alias="${plugin_spec#*@}"
+        else
+            # Try to find the marketplace for this plugin
+            plugin_name="$plugin_spec"
+            marketplace_alias=$(find_marketplace_for_plugin "$plugin_name")
+
+            if [[ -z "$marketplace_alias" ]]; then
+                echo -e "  ${RED}✗${NC} $plugin_name - not found in any marketplace"
+                ((failed++))
+                continue
+            fi
+        fi
+
+        echo -n "  $plugin_name@$marketplace_alias... "
+
+        if [[ "$dry_run" == true ]]; then
+            echo "would reinstall"
+            ((success++))
+            continue
+        fi
+
+        # Uninstall first (ignore errors - might not be installed)
+        claude plugin uninstall "$plugin_name@$marketplace_alias" >/dev/null 2>&1 || true
+
+        # Install
+        if claude plugin install "$plugin_name@$marketplace_alias" >/dev/null 2>&1; then
+            echo -e "${GREEN}reinstalled${NC}"
+            ((success++))
+        else
+            echo -e "${RED}failed${NC}"
+            ((failed++))
+        fi
+    done
+
+    echo
+    if [[ $failed -eq 0 ]]; then
+        echo -e "${GREEN}Done!${NC} Reinstalled $success plugin(s)."
+    else
+        echo -e "${YELLOW}Done.${NC} Reinstalled $success, failed $failed."
+        return 1
+    fi
+}
+
+# Find which marketplace a plugin is installed from
+find_marketplace_for_plugin() {
+    local plugin_name="$1"
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+
+    if [[ ! -f "$installed_json" ]]; then
+        return
+    fi
+
+    # Find the plugin and extract marketplace alias
+    jq -r --arg plugin "$plugin_name" '
+        .plugins // {} | keys[] |
+        select(startswith($plugin + "@")) |
+        split("@")[1]
+    ' "$installed_json" 2>/dev/null | head -1
+}
+
 # Show usage
 usage() {
     cat << EOF
@@ -553,22 +942,32 @@ Commands:
   discover               Discover and import installed marketplaces
   update [org/repo]      Fetch latest catalogs, show available upgrades
   upgrade [org/repo]     Fetch + reinstall changed plugins
+  search <query>         Search for plugins in local marketplace repos
+  reinstall <plugin@mp>  Reinstall specific plugin(s)
+  uninstall <plugin@mp>  Uninstall specific plugin(s)
   add <org/repo> <alias> Add marketplace to config
   remove <org/repo>      Remove marketplace from config
-  list                   List configured marketplaces
+  list                   List configured marketplaces and plugins
   config                 Show config file path and contents
   help                   Show this help
 
 Options:
   --config <path>        Use alternate config file (default: $DEFAULT_CONFIG_FILE)
-  --dry-run              Show what would be upgraded without making changes (for upgrade)
+  --dry-run              Show what would happen without making changes
+  -v, --verbose          Show additional details (for search)
 
 Examples:
   ccpm discover                              # Import installed marketplaces
   ccpm update                                # Check for updates (like apt update)
   ccpm upgrade                               # Install updates (like apt upgrade)
   ccpm upgrade --dry-run                     # Preview what would be upgraded
-  ccpm upgrade anthropics/skills             # Upgrade specific marketplace
+  ccpm search trivy                          # Search for plugins matching 'trivy'
+  ccpm search security -v                    # Search with descriptions
+  ccpm reinstall trivy@plinde-plugins        # Reinstall a specific plugin
+  ccpm reinstall trivy tmux                  # Reinstall multiple (auto-detect marketplace)
+  ccpm reinstall --all plinde-plugins        # Reinstall all plugins from a marketplace
+  ccpm uninstall trivy@plinde-plugins        # Uninstall a specific plugin
+  ccpm uninstall --all plinde-plugins        # Uninstall all plugins from a marketplace
   ccpm add anthropics/skills anthropic-skills
   ccpm list
 EOF
@@ -616,6 +1015,15 @@ main() {
             ;;
         upgrade)
             cmd_upgrade "$@"
+            ;;
+        search)
+            cmd_search "$@"
+            ;;
+        reinstall)
+            cmd_reinstall "$@"
+            ;;
+        uninstall)
+            cmd_uninstall "$@"
             ;;
         add)
             if [[ $# -lt 2 ]]; then
