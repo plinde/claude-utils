@@ -12,7 +12,9 @@
 #   ccpm uninstall <plugin@mp>                     # Uninstall specific plugin(s)
 #   ccpm add <org/repo> <alias>                    # Add marketplace mapping
 #   ccpm remove <org/repo>                         # Remove marketplace mapping
-#   ccpm list                                      # List configured marketplaces and plugins
+#   ccpm list [alias]                              # List configured marketplaces and plugins
+#   ccpm list --plugins <pattern>                  # List installed plugins matching pattern
+#   ccpm check-conflicts                           # Check for naming conflicts
 #   ccpm config                                    # Show config file path
 #
 # Options:
@@ -21,6 +23,9 @@
 # Configuration: ~/.config/ccpm.yaml (default)
 
 set -euo pipefail
+
+# Exit on Ctrl+C (don't let loops continue after interrupt)
+trap 'echo -e "\n${RED}Interrupted${NC}"; exit 130' INT
 
 # Default config location (can be overridden with --config)
 DEFAULT_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -204,11 +209,39 @@ add_marketplace_to_config() {
 }
 
 # Add a marketplace mapping
+# Check if a plugin with the given name exists in any marketplace
+find_plugins_by_name() {
+    local plugin_name="$1"
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+
+    if [[ ! -f "$installed_json" ]]; then
+        return
+    fi
+
+    jq -r --arg plugin "$plugin_name" '
+        .plugins // {} | keys[] |
+        select(startswith($plugin + "@"))
+    ' "$installed_json" 2>/dev/null
+}
+
 cmd_add() {
     local repo="$1"
     local alias="$2"
 
     ensure_config
+
+    # Warn if alias conflicts with an installed plugin name
+    local conflicts
+    conflicts=$(find_plugins_by_name "$alias")
+    if [[ -n "$conflicts" ]]; then
+        echo -e "${YELLOW}Warning:${NC} Alias '$alias' matches installed plugin(s):"
+        echo "$conflicts" | while read -r p; do
+            echo "  - $p"
+        done
+        echo "This may cause confusion when using 'ccpm list $alias'."
+        echo
+    fi
+
     add_marketplace_to_config "$repo" "$alias"
     echo -e "${GREEN}Added${NC} ${repo} -> ${alias}"
 }
@@ -228,9 +261,9 @@ cmd_remove() {
     fi
 
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "/^  ${repo}:/d" "$CONFIG_FILE"
+        sed -i '' "\|^  ${repo}:|d" "$CONFIG_FILE"
     else
-        sed -i "/^  ${repo}:/d" "$CONFIG_FILE"
+        sed -i "\|^  ${repo}:|d" "$CONFIG_FILE"
     fi
     echo -e "${GREEN}Removed${NC} ${repo}"
 }
@@ -287,8 +320,89 @@ get_marketplace_git_info() {
     fi
 }
 
+# List installed plugins matching a pattern (used by --plugins flag)
+list_plugins_by_pattern() {
+    local pattern="$1"
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+
+    if [[ ! -f "$installed_json" ]]; then
+        echo "No plugins installed."
+        return
+    fi
+
+    echo -e "${BLUE}Installed plugins matching '$pattern':${NC}"
+    echo
+
+    local found=0
+    local results
+    results=$(jq -r '.plugins // {} | keys[]' "$installed_json" 2>/dev/null | sort)
+
+    while IFS= read -r key; do
+        [[ -z "$key" ]] && continue
+
+        local plugin_name="${key%@*}"
+        local marketplace_alias="${key#*@}"
+
+        # Match pattern against plugin name (case-insensitive)
+        if ! echo "$plugin_name" | grep -qi "$pattern"; then
+            continue
+        fi
+
+        ((found++))
+
+        local plugin_info version git_hash
+        plugin_info=$(get_installed_plugin_info "$plugin_name" "$marketplace_alias")
+        version="${plugin_info%|*}"
+        git_hash="${plugin_info#*|}"
+
+        printf "  ${BLUE}%s${NC}@%s" "$plugin_name" "$marketplace_alias"
+        if [[ -n "$version" ]]; then
+            printf " ${DIM}v%s${NC}" "$version"
+        fi
+        if [[ -n "$git_hash" ]]; then
+            printf " ${DIM}@%s${NC}" "$git_hash"
+        fi
+        echo
+    done <<< "$results"
+
+    echo
+    if [[ $found -eq 0 ]]; then
+        echo -e "${DIM}No installed plugins match '$pattern'${NC}"
+    else
+        echo -e "Found ${GREEN}$found${NC} installed plugin(s) matching '$pattern'"
+    fi
+}
+
 # List configured marketplaces
 cmd_list() {
+    local filter_alias=""
+    local plugin_pattern=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --plugins|-p)
+                shift
+                if [[ $# -lt 1 ]]; then
+                    echo -e "${RED}Error:${NC} --plugins requires a pattern"
+                    return 1
+                fi
+                plugin_pattern="$1"
+                shift
+                ;;
+            *)
+                filter_alias="$1"
+                shift
+                ;;
+        esac
+    done
+
+    # If --plugins mode, use different listing
+    if [[ -n "$plugin_pattern" ]]; then
+        list_plugins_by_pattern "$plugin_pattern"
+        return
+    fi
+
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo "No marketplaces configured."
         echo "Run 'ccpm discover' to import installed marketplaces."
@@ -296,13 +410,22 @@ cmd_list() {
         return
     fi
 
-    echo -e "${BLUE}Configured marketplaces:${NC}"
+    if [[ -z "$filter_alias" ]]; then
+        echo -e "${BLUE}Configured marketplaces:${NC}"
+    fi
     echo
 
+    local found=false
     while IFS= read -r repo; do
         [[ -z "$repo" ]] && continue
         local alias
         alias=$(get_alias "$repo")
+
+        # If filter specified, skip non-matching marketplaces
+        if [[ -n "$filter_alias" ]] && [[ "$alias" != "$filter_alias" ]]; then
+            continue
+        fi
+        found=true
         local marketplace_dir="$PLUGINS_DIR/$alias"
         local status=""
         local git_info=""
@@ -346,6 +469,12 @@ cmd_list() {
         fi
         echo
     done < <(get_all_repos)
+
+    if [[ -n "$filter_alias" ]] && [[ "$found" == false ]]; then
+        echo -e "${RED}Error:${NC} Marketplace '$filter_alias' not found"
+        echo "Run 'ccpm list' to see configured marketplaces."
+        return 1
+    fi
 }
 
 # Get list of changed plugin directories between two commits
@@ -779,7 +908,11 @@ cmd_uninstall() {
         else
             # Try to find the marketplace for this plugin
             plugin_name="$plugin_spec"
-            marketplace_alias=$(find_marketplace_for_plugin "$plugin_name")
+            if ! marketplace_alias=$(find_marketplace_for_plugin "$plugin_name"); then
+                # Ambiguous - error message already printed
+                ((failed++))
+                continue
+            fi
 
             if [[ -z "$marketplace_alias" ]]; then
                 echo -e "  ${RED}✗${NC} $plugin_name - not found in any marketplace"
@@ -877,7 +1010,11 @@ cmd_reinstall() {
         else
             # Try to find the marketplace for this plugin
             plugin_name="$plugin_spec"
-            marketplace_alias=$(find_marketplace_for_plugin "$plugin_name")
+            if ! marketplace_alias=$(find_marketplace_for_plugin "$plugin_name"); then
+                # Ambiguous - error message already printed
+                ((failed++))
+                continue
+            fi
 
             if [[ -z "$marketplace_alias" ]]; then
                 echo -e "  ${RED}✗${NC} $plugin_name - not found in any marketplace"
@@ -917,6 +1054,7 @@ cmd_reinstall() {
 }
 
 # Find which marketplace a plugin is installed from
+# Returns 1 if plugin exists in multiple marketplaces (ambiguous)
 find_marketplace_for_plugin() {
     local plugin_name="$1"
     local installed_json="$HOME/.claude/plugins/installed_plugins.json"
@@ -925,12 +1063,127 @@ find_marketplace_for_plugin() {
         return
     fi
 
-    # Find the plugin and extract marketplace alias
-    jq -r --arg plugin "$plugin_name" '
+    # Find all marketplaces containing this plugin
+    local matches
+    matches=$(jq -r --arg plugin "$plugin_name" '
         .plugins // {} | keys[] |
         select(startswith($plugin + "@")) |
         split("@")[1]
-    ' "$installed_json" 2>/dev/null | head -1
+    ' "$installed_json" 2>/dev/null)
+
+    if [[ -z "$matches" ]]; then
+        return
+    fi
+
+    # Count matches
+    local count
+    count=$(echo "$matches" | wc -l | tr -d ' ')
+
+    if [[ $count -gt 1 ]]; then
+        echo -e "${YELLOW}Ambiguous:${NC} '$plugin_name' exists in multiple marketplaces:" >&2
+        echo "$matches" | while read -r mp; do
+            echo "  - $plugin_name@$mp" >&2
+        done
+        echo "Please specify explicitly: <command> $plugin_name@<marketplace>" >&2
+        return 1
+    fi
+
+    echo "$matches"
+}
+
+# Check for naming conflicts between marketplaces and plugins
+cmd_check_conflicts() {
+    echo -e "${BLUE}=== Checking for Naming Conflicts ===${NC}"
+    echo
+
+    local installed_json="$HOME/.claude/plugins/installed_plugins.json"
+    local conflicts_found=0
+
+    # Check 1: Plugins installed in multiple marketplaces
+    echo -e "${BLUE}Plugins in multiple marketplaces:${NC}"
+    local multi_mp_plugins=()
+
+    if [[ -f "$installed_json" ]]; then
+        # Get all plugin names (without @marketplace)
+        local all_plugins
+        all_plugins=$(jq -r '.plugins // {} | keys[] | split("@")[0]' "$installed_json" 2>/dev/null | sort)
+
+        local prev=""
+        while IFS= read -r plugin; do
+            [[ -z "$plugin" ]] && continue
+            if [[ "$plugin" == "$prev" ]]; then
+                # Duplicate found - check if already in array
+                local already_added=false
+                if [[ ${#multi_mp_plugins[@]} -gt 0 ]]; then
+                    for existing in "${multi_mp_plugins[@]}"; do
+                        if [[ "$existing" == "$plugin" ]]; then
+                            already_added=true
+                            break
+                        fi
+                    done
+                fi
+                if [[ "$already_added" == false ]]; then
+                    multi_mp_plugins+=("$plugin")
+                fi
+            fi
+            prev="$plugin"
+        done <<< "$all_plugins"
+
+        if [[ ${#multi_mp_plugins[@]} -gt 0 ]]; then
+            for plugin in "${multi_mp_plugins[@]}"; do
+                ((conflicts_found++))
+                echo -e "  ${YELLOW}⚠${NC} $plugin:"
+                jq -r --arg plugin "$plugin" '
+                    .plugins // {} | keys[] |
+                    select(startswith($plugin + "@"))
+                ' "$installed_json" 2>/dev/null | while read -r full_key; do
+                    echo "      - $full_key"
+                done
+            done
+        else
+            echo -e "  ${GREEN}✓${NC} None found"
+        fi
+    else
+        echo -e "  ${DIM}No plugins installed${NC}"
+    fi
+
+    echo
+
+    # Check 2: Marketplace aliases matching plugin names
+    echo -e "${BLUE}Marketplace aliases matching plugin names:${NC}"
+    local alias_conflicts=0
+
+    while IFS= read -r repo; do
+        [[ -z "$repo" ]] && continue
+        local alias
+        alias=$(get_alias "$repo")
+
+        local matching_plugins
+        matching_plugins=$(find_plugins_by_name "$alias")
+
+        if [[ -n "$matching_plugins" ]]; then
+            ((alias_conflicts++))
+            ((conflicts_found++))
+            echo -e "  ${YELLOW}⚠${NC} Marketplace alias '$alias' conflicts with:"
+            echo "$matching_plugins" | while read -r p; do
+                echo "      - $p"
+            done
+        fi
+    done < <(get_all_repos)
+
+    if [[ $alias_conflicts -eq 0 ]]; then
+        echo -e "  ${GREEN}✓${NC} None found"
+    fi
+
+    echo
+    echo -e "${BLUE}=== Summary ===${NC}"
+    if [[ $conflicts_found -eq 0 ]]; then
+        echo -e "${GREEN}No conflicts detected.${NC}"
+    else
+        echo -e "${YELLOW}$conflicts_found conflict(s) found.${NC}"
+        echo "Use explicit 'plugin@marketplace' format to avoid ambiguity."
+        return 1
+    fi
 }
 
 # Show usage
@@ -947,7 +1200,9 @@ Commands:
   uninstall <plugin@mp>  Uninstall specific plugin(s)
   add <org/repo> <alias> Add marketplace to config
   remove <org/repo>      Remove marketplace from config
-  list                   List configured marketplaces and plugins
+  list [alias]           List configured marketplaces and plugins
+  list --plugins <pat>   List installed plugins matching pattern
+  check-conflicts        Check for naming conflicts
   config                 Show config file path and contents
   help                   Show this help
 
@@ -1040,7 +1295,10 @@ main() {
             cmd_remove "$1"
             ;;
         list)
-            cmd_list
+            cmd_list "$@"
+            ;;
+        check-conflicts)
+            cmd_check_conflicts
             ;;
         config)
             cmd_config
