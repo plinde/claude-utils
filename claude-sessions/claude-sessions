@@ -101,39 +101,104 @@ shorten_path() {
 }
 
 # Helper: Parse date string to epoch seconds (macOS compatible)
-# Supports formats: "November 1st 2025", "Nov 1 2025", "2025-11-01", "11/1/2025"
+# Supports formats: YYYY, YYYY.MM, YYYY.MM.DD (and legacy formats)
+# Args: input, mode ("from" or "to")
+#   - "from": returns start of period (beginning of year/month/day)
+#   - "to": returns end of period (end of year/month/day)
 parse_date() {
     local input="$1"
-    local epoch
+    local mode="${2:-from}"  # default to "from" behavior
+    local epoch year month day
 
     # Normalize: remove ordinal suffixes (1st, 2nd, 3rd, 4th, etc)
     input=$(echo "$input" | sed -E 's/([0-9])(st|nd|rd|th)/\1/gi')
 
-    # Try ISO format first: 2025-11-01
+    # YYYY format (year only)
+    if [[ "$input" =~ ^[0-9]{4}$ ]]; then
+        year="$input"
+        if [[ "$mode" == "to" ]]; then
+            # End of year: Dec 31 23:59:59
+            epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$year-12-31 23:59:59" +%s 2>/dev/null)
+        else
+            # Start of year: Jan 1 00:00:00
+            epoch=$(date -j -f "%Y-%m-%d" "$year-01-01" +%s 2>/dev/null)
+        fi
+        [[ -n "$epoch" ]] && echo "$epoch" && return 0
+    fi
+
+    # YYYY.MM format (year and month)
+    if [[ "$input" =~ ^([0-9]{4})\.([0-9]{1,2})$ ]]; then
+        year="${BASH_REMATCH[1]}"
+        month="${BASH_REMATCH[2]}"
+        # Pad month to 2 digits
+        month=$(printf "%02d" "$month")
+        if [[ "$mode" == "to" ]]; then
+            # End of month: subtract 1 second from start of next month
+            local next_month=$((10#$month + 1))
+            local next_year="$year"
+            if [[ $next_month -gt 12 ]]; then
+                next_month=1
+                next_year=$((year + 1))
+            fi
+            next_month=$(printf "%02d" "$next_month")
+            local next_start
+            next_start=$(date -j -f "%Y-%m-%d" "$next_year-$next_month-01" +%s 2>/dev/null)
+            epoch=$((next_start - 1))
+        else
+            # Start of month: 1st day 00:00:00
+            epoch=$(date -j -f "%Y-%m-%d" "$year-$month-01" +%s 2>/dev/null)
+        fi
+        [[ -n "$epoch" ]] && echo "$epoch" && return 0
+    fi
+
+    # YYYY.MM.DD format (full date with dots)
+    if [[ "$input" =~ ^([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})$ ]]; then
+        year="${BASH_REMATCH[1]}"
+        month=$(printf "%02d" "${BASH_REMATCH[2]}")
+        day=$(printf "%02d" "${BASH_REMATCH[3]}")
+        if [[ "$mode" == "to" ]]; then
+            epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$year-$month-$day 23:59:59" +%s 2>/dev/null)
+        else
+            epoch=$(date -j -f "%Y-%m-%d" "$year-$month-$day" +%s 2>/dev/null)
+        fi
+        [[ -n "$epoch" ]] && echo "$epoch" && return 0
+    fi
+
+    # Legacy: ISO format 2025-11-01
     if [[ "$input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-        epoch=$(date -j -f "%Y-%m-%d" "$input" +%s 2>/dev/null)
+        if [[ "$mode" == "to" ]]; then
+            epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$input 23:59:59" +%s 2>/dev/null)
+        else
+            epoch=$(date -j -f "%Y-%m-%d" "$input" +%s 2>/dev/null)
+        fi
         [[ -n "$epoch" ]] && echo "$epoch" && return 0
     fi
 
-    # Try US format: 11/1/2025 or 11/01/2025
+    # Legacy: US format 11/1/2025
     if [[ "$input" =~ ^[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}$ ]]; then
-        epoch=$(date -j -f "%m/%d/%Y" "$input" +%s 2>/dev/null)
+        if [[ "$mode" == "to" ]]; then
+            local parsed
+            parsed=$(date -j -f "%m/%d/%Y" "$input" +"%Y-%m-%d" 2>/dev/null)
+            epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$parsed 23:59:59" +%s 2>/dev/null)
+        else
+            epoch=$(date -j -f "%m/%d/%Y" "$input" +%s 2>/dev/null)
+        fi
         [[ -n "$epoch" ]] && echo "$epoch" && return 0
     fi
 
-    # Try "Month Day Year" format: November 1 2025, Nov 1 2025
-    epoch=$(date -j -f "%B %d %Y" "$input" +%s 2>/dev/null)
-    [[ -n "$epoch" ]] && echo "$epoch" && return 0
-
-    epoch=$(date -j -f "%b %d %Y" "$input" +%s 2>/dev/null)
-    [[ -n "$epoch" ]] && echo "$epoch" && return 0
-
-    # Try "Day Month Year": 1 November 2025
-    epoch=$(date -j -f "%d %B %Y" "$input" +%s 2>/dev/null)
-    [[ -n "$epoch" ]] && echo "$epoch" && return 0
-
-    epoch=$(date -j -f "%d %b %Y" "$input" +%s 2>/dev/null)
-    [[ -n "$epoch" ]] && echo "$epoch" && return 0
+    # Legacy: "Month Day Year" format
+    for fmt in "%B %d %Y" "%b %d %Y" "%d %B %Y" "%d %b %Y"; do
+        local parsed
+        parsed=$(date -j -f "$fmt" "$input" +"%Y-%m-%d" 2>/dev/null)
+        if [[ -n "$parsed" ]]; then
+            if [[ "$mode" == "to" ]]; then
+                epoch=$(date -j -f "%Y-%m-%d %H:%M:%S" "$parsed 23:59:59" +%s 2>/dev/null)
+            else
+                epoch=$(date -j -f "%Y-%m-%d" "$parsed" +%s 2>/dev/null)
+            fi
+            [[ -n "$epoch" ]] && echo "$epoch" && return 0
+        fi
+    done
 
     return 1
 }
@@ -230,23 +295,21 @@ main() {
             -j|--json) json_output=true; shift ;;
             -n) count="$2"; shift 2 ;;
             --from)
-                from_epoch=$(parse_date "$2")
+                from_epoch=$(parse_date "$2" "from")
                 if [[ -z "$from_epoch" ]]; then
                     echo "Error: Could not parse date '$2'" >&2
-                    echo "Formats: '2025-11-01', 'November 1 2025', 'Nov 1 2025', '11/1/2025'" >&2
+                    echo "Formats: YYYY, YYYY.MM, YYYY.MM.DD (e.g., 2025, 2025.12, 2025.12.01)" >&2
                     return 1
                 fi
                 shift 2
                 ;;
             --to)
-                to_epoch=$(parse_date "$2")
+                to_epoch=$(parse_date "$2" "to")
                 if [[ -z "$to_epoch" ]]; then
                     echo "Error: Could not parse date '$2'" >&2
-                    echo "Formats: '2025-11-01', 'November 1 2025', 'Nov 1 2025', '11/1/2025'" >&2
+                    echo "Formats: YYYY, YYYY.MM, YYYY.MM.DD (e.g., 2025, 2025.12, 2025.12.01)" >&2
                     return 1
                 fi
-                # Add 86399 seconds (23:59:59) to include the entire end date
-                to_epoch=$((to_epoch + 86399))
                 shift 2
                 ;;
             --by-start) filter_mode="start"; shift ;;
@@ -273,20 +336,22 @@ Options:
   --here         Only show sessions for current directory
   -h, --help     Show this help
 
-Date formats: 2025-11-01, November 1 2025, Nov 1st 2025, 11/1/2025
+Date formats:
+  YYYY         Year only (e.g., 2025)
+  YYYY.MM      Year and month (e.g., 2025.12)
+  YYYY.MM.DD   Full date (e.g., 2025.12.01)
 
 Examples:
   claude-sessions           # Show 3 most recent sessions
   claude-sessions -n 20     # Show 20 most recent sessions
-  claude-sessions -a        # Include agent sessions
   claude-sessions -s        # Use shortened paths
   claude-sessions -v        # Show refs, file path, message counts
   claude-sessions -g Tutor     # Case-sensitive search
-  claude-sessions -g tutor -i  # Case-insensitive search
   claude-sessions --here    # Sessions for current directory only
   claude-sessions -j | jq   # JSON output for scripting
-  claude-sessions --from "Nov 1 2025" --to "Nov 5 2025"
-  claude-sessions --from "Dec 1 2025" --by-start  # Filter by session start
+  claude-sessions --from 2025.11 --to 2025.12      # Nov-Dec 2025
+  claude-sessions --from 2025.12.01 --to 2025.12.05
+  claude-sessions --from 2025 --by-start           # All of 2025 by start
 HELP
                 return 0
                 ;;
