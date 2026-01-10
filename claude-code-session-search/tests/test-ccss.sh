@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# test-claude-sessions.sh - Unit tests for claude-sessions date range filtering
+# test-ccss.sh - Unit tests for ccss date range filtering
 #
-# Usage: ./claude-sessions/tests/test-claude-sessions.sh
+# Usage: ./claude-code-session-search/tests/test-ccss.sh
 #
 # Tests run in an isolated environment using temporary directories
 # with mock session data to avoid using real user sessions.
@@ -24,7 +24,7 @@ TESTS_FAILED=0
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CLAUDE_SESSIONS="$SCRIPT_DIR/claude-sessions"
+CCSS="$SCRIPT_DIR/ccss"
 
 # Temporary test environment
 TEST_DIR=""
@@ -138,7 +138,7 @@ create_mock_session() {
     local summary="${4:-Test session}"
     local mtime_date="${5:-}"  # Optional: set file mtime to this date (YYYY-MM-DD)
 
-    # Encode project path (simulating how claude-sessions encodes paths)
+    # Encode project path (simulating how ccss encodes paths)
     local project_dir="$TEST_DIR/.claude/projects/-Users-jane-workspace-github-com-acme-${project_name}"
     mkdir -p "$project_dir"
 
@@ -165,7 +165,7 @@ EOF
 
 test_parse_date_yyyy_from() {
     # Source the script functions
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025" "from")
@@ -178,7 +178,7 @@ test_parse_date_yyyy_from() {
 }
 
 test_parse_date_yyyy_to() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025" "to")
@@ -195,7 +195,7 @@ test_parse_date_yyyy_to() {
 # ============================================================================
 
 test_parse_date_yyyy_mm_from() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.12" "from")
@@ -208,7 +208,7 @@ test_parse_date_yyyy_mm_from() {
 }
 
 test_parse_date_yyyy_mm_to() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.12" "to")
@@ -223,7 +223,7 @@ test_parse_date_yyyy_mm_to() {
 }
 
 test_parse_date_yyyy_mm_to_february() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.02" "to")
@@ -237,7 +237,7 @@ test_parse_date_yyyy_mm_to_february() {
 }
 
 test_parse_date_yyyy_mm_to_leap_year() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2024.02" "to")
@@ -251,7 +251,7 @@ test_parse_date_yyyy_mm_to_leap_year() {
 }
 
 test_parse_date_yyyy_mm_single_digit_month() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.1" "from")
@@ -268,7 +268,7 @@ test_parse_date_yyyy_mm_single_digit_month() {
 # ============================================================================
 
 test_parse_date_yyyy_mm_dd_from() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.12.15" "from")
@@ -281,7 +281,7 @@ test_parse_date_yyyy_mm_dd_from() {
 }
 
 test_parse_date_yyyy_mm_dd_to() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.12.15" "to")
@@ -294,7 +294,7 @@ test_parse_date_yyyy_mm_dd_to() {
 }
 
 test_parse_date_yyyy_mm_dd_single_digits() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025.1.5" "from")
@@ -311,7 +311,7 @@ test_parse_date_yyyy_mm_dd_single_digits() {
 # ============================================================================
 
 test_parse_date_iso_from() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025-12-15" "from")
@@ -323,7 +323,7 @@ test_parse_date_iso_from() {
 }
 
 test_parse_date_iso_to() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "2025-12-15" "to")
@@ -335,7 +335,7 @@ test_parse_date_iso_to() {
 }
 
 test_parse_date_us_format() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "12/15/2025" "from")
@@ -347,7 +347,7 @@ test_parse_date_us_format() {
 }
 
 test_parse_date_month_name() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "December 15 2025" "from")
@@ -359,7 +359,7 @@ test_parse_date_month_name() {
 }
 
 test_parse_date_month_abbrev() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "Dec 15 2025" "from")
@@ -371,7 +371,7 @@ test_parse_date_month_abbrev() {
 }
 
 test_parse_date_ordinal_suffix() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local result
     result=$(parse_date "December 1st 2025" "from")
@@ -383,7 +383,7 @@ test_parse_date_ordinal_suffix() {
 }
 
 test_parse_date_invalid() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     local exit_code=0
     parse_date "invalid-date" "from" >/dev/null 2>&1 || exit_code=$?
@@ -401,7 +401,7 @@ test_filter_from_only() {
     create_mock_session "webapp" "session-dec" "2025-12-15T10:00:00.000Z" "December session" "2025-12-15"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.12 2>&1)
+    output=$("$CCSS" -n 10 --from 2025.12 2>&1)
 
     assert_contains "$output" "December session"
     assert_not_contains "$output" "November session"
@@ -413,7 +413,7 @@ test_filter_to_only() {
     create_mock_session "webapp" "session-dec" "2025-12-15T10:00:00.000Z" "December session" "2025-12-15"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --to 2025.11 2>&1)
+    output=$("$CCSS" -n 10 --to 2025.11 2>&1)
 
     assert_contains "$output" "November session"
     assert_not_contains "$output" "December session"
@@ -426,7 +426,7 @@ test_filter_from_and_to() {
     create_mock_session "webapp" "session-dec" "2025-12-15T10:00:00.000Z" "December session" "2025-12-15"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.11 --to 2025.11 2>&1)
+    output=$("$CCSS" -n 10 --from 2025.11 --to 2025.11 2>&1)
 
     assert_contains "$output" "November session"
     assert_not_contains "$output" "October session"
@@ -439,7 +439,7 @@ test_filter_year_only() {
     create_mock_session "webapp" "session-2025" "2025-06-15T10:00:00.000Z" "2025 session" "2025-06-15"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025 --to 2025 2>&1)
+    output=$("$CCSS" -n 10 --from 2025 --to 2025 2>&1)
 
     assert_contains "$output" "2025 session"
     assert_not_contains "$output" "2024 session"
@@ -454,7 +454,7 @@ test_filter_specific_days() {
     create_mock_session "webapp" "session-d5" "2025-12-05T10:00:00.000Z" "Dec 5 session" "2025-12-05"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.12.02 --to 2025.12.04 2>&1)
+    output=$("$CCSS" -n 10 --from 2025.12.02 --to 2025.12.04 2>&1)
 
     assert_contains "$output" "Dec 2 session"
     assert_contains "$output" "Dec 3 session"
@@ -468,7 +468,7 @@ test_filter_no_results() {
 
     local output
     local exit_code=0
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.12 --to 2025.12 2>&1) || exit_code=$?
+    output=$("$CCSS" -n 10 --from 2025.12 --to 2025.12 2>&1) || exit_code=$?
 
     assert_exit_code 1 "$exit_code" "Should exit with error when no sessions found"
     assert_contains "$output" "No sessions found"
@@ -485,7 +485,7 @@ test_filter_by_last_default() {
 
     # Default is --by-last, so December filter should find it
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.12 2>&1)
+    output=$("$CCSS" -n 10 --from 2025.12 2>&1)
 
     assert_contains "$output" "Long running session"
 }
@@ -497,7 +497,7 @@ test_filter_by_start() {
     # --by-start should use start timestamp, so December filter should NOT find it
     local output
     local exit_code=0
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.12 --by-start 2>&1) || exit_code=$?
+    output=$("$CCSS" -n 10 --from 2025.12 --by-start 2>&1) || exit_code=$?
 
     # Session started in November, so December --by-start should not find it
     assert_exit_code 1 "$exit_code"
@@ -510,7 +510,7 @@ test_filter_by_start_finds_session() {
 
     # --by-start November should find it
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 --from 2025.11 --to 2025.11 --by-start 2>&1)
+    output=$("$CCSS" -n 10 --from 2025.11 --to 2025.11 --by-start 2>&1)
 
     assert_contains "$output" "Started in Nov"
 }
@@ -523,7 +523,7 @@ test_json_output_includes_dates() {
     create_mock_session "webapp" "test-session" "2025-12-15T10:30:00.000Z" "JSON test" "2025-12-16"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -j -n 1 2>&1)
+    output=$("$CCSS" -j -n 1 2>&1)
 
     assert_contains "$output" '"started":'
     assert_contains "$output" '"modified":'
@@ -536,7 +536,7 @@ test_json_output_includes_dates() {
 test_invalid_from_date_error() {
     local output
     local exit_code=0
-    output=$("$CLAUDE_SESSIONS" --from "invalid" 2>&1) || exit_code=$?
+    output=$("$CCSS" --from "invalid" 2>&1) || exit_code=$?
 
     assert_exit_code 1 "$exit_code"
     assert_contains "$output" "Could not parse date"
@@ -545,7 +545,7 @@ test_invalid_from_date_error() {
 test_invalid_to_date_error() {
     local output
     local exit_code=0
-    output=$("$CLAUDE_SESSIONS" --to "garbage" 2>&1) || exit_code=$?
+    output=$("$CCSS" --to "garbage" 2>&1) || exit_code=$?
 
     assert_exit_code 1 "$exit_code"
     assert_contains "$output" "Could not parse date"
@@ -553,7 +553,7 @@ test_invalid_to_date_error() {
 
 test_help_shows_date_formats() {
     local output
-    output=$("$CLAUDE_SESSIONS" --help 2>&1)
+    output=$("$CCSS" --help 2>&1)
 
     assert_contains "$output" "YYYY"
     assert_contains "$output" "YYYY.MM"
@@ -569,7 +569,7 @@ test_help_shows_date_formats() {
 # ============================================================================
 
 test_year_boundary_december_to_january() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     # December 2025 "to" should be Dec 31 23:59:59
     local dec_end
@@ -585,7 +585,7 @@ test_year_boundary_december_to_january() {
 }
 
 test_month_boundary() {
-    source "$CLAUDE_SESSIONS"
+    source "$CCSS"
 
     # November 2025 "to" should be Nov 30 23:59:59
     local nov_end
@@ -605,7 +605,7 @@ test_combined_search_and_date_filter() {
     create_mock_session "webapp" "session-dec" "2025-12-15T10:00:00.000Z" "Auth feature December" "2025-12-15"
 
     local output
-    output=$("$CLAUDE_SESSIONS" -n 10 -g "Auth" --from 2025.12 2>&1)
+    output=$("$CCSS" -n 10 -g "Auth" --from 2025.12 2>&1)
 
     assert_contains "$output" "Auth feature December"
     assert_not_contains "$output" "Auth feature November"
@@ -616,12 +616,12 @@ test_combined_search_and_date_filter() {
 # ============================================================================
 
 main() {
-    echo -e "${BLUE}=== claude-sessions Date Range Tests ===${NC}"
+    echo -e "${BLUE}=== ccss Date Range Tests ===${NC}"
     echo
 
     # Verify script exists
-    if [[ ! -x "$CLAUDE_SESSIONS" ]]; then
-        echo -e "${RED}Error:${NC} claude-sessions not found at $CLAUDE_SESSIONS"
+    if [[ ! -x "$CCSS" ]]; then
+        echo -e "${RED}Error:${NC} ccss not found at $CCSS"
         exit 1
     fi
 

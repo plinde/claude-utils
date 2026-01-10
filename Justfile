@@ -2,7 +2,10 @@
 
 repo_dir := justfile_directory()
 bin_dir := env_var('HOME') / "bin"
-executables := "ccpm claude-sessions claude-resume"
+executables := "ccpm ccss claude-resume"
+
+# Directory mapping for executables (most use same name as executable)
+ccss_dir := "claude-code-session-search"
 
 # Show available recipes
 default:
@@ -50,22 +53,22 @@ install-ccpm:
         echo "Linked ccpm -> {{ bin_dir }}/ccpm"; \
     fi
 
-# Install claude-sessions
-install-claude-sessions:
+# Install ccss (Claude Code Session Search)
+install-ccss:
     @if [ -e "{{ bin_dir }}" ] && [ ! -d "{{ bin_dir }}" ]; then \
         echo "Error: {{ bin_dir }} exists but is not a directory"; \
-        echo "Manually copy or symlink claude-sessions/claude-sessions to somewhere in your PATH"; \
+        echo "Manually copy or symlink {{ ccss_dir }}/ccss to somewhere in your PATH"; \
         exit 1; \
     fi
     @mkdir -p {{ bin_dir }}
-    @if [ ! -x "{{ repo_dir }}/claude-sessions/claude-sessions" ]; then \
-        echo "Error: claude-sessions not found"; exit 1; \
+    @if [ ! -x "{{ repo_dir }}/{{ ccss_dir }}/ccss" ]; then \
+        echo "Error: ccss not found"; exit 1; \
     fi
-    @if [ -e "{{ bin_dir }}/claude-sessions" ]; then \
-        echo "Skipping claude-sessions (exists)"; \
+    @if [ -e "{{ bin_dir }}/ccss" ]; then \
+        echo "Skipping ccss (exists)"; \
     else \
-        ln -s "{{ repo_dir }}/claude-sessions/claude-sessions" "{{ bin_dir }}/claude-sessions"; \
-        echo "Linked claude-sessions -> {{ bin_dir }}/claude-sessions"; \
+        ln -s "{{ repo_dir }}/{{ ccss_dir }}/ccss" "{{ bin_dir }}/ccss"; \
+        echo "Linked ccss -> {{ bin_dir }}/ccss"; \
     fi
 
 # Install claude-resume
@@ -101,13 +104,13 @@ uninstall-ccpm:
         echo "Skipping ccpm (not installed or not a symlink)"; \
     fi
 
-# Uninstall claude-sessions
-uninstall-claude-sessions:
-    @if [ -L "{{ bin_dir }}/claude-sessions" ]; then \
-        rm "{{ bin_dir }}/claude-sessions"; \
-        echo "Removed {{ bin_dir }}/claude-sessions"; \
+# Uninstall ccss
+uninstall-ccss:
+    @if [ -L "{{ bin_dir }}/ccss" ]; then \
+        rm "{{ bin_dir }}/ccss"; \
+        echo "Removed {{ bin_dir }}/ccss"; \
     else \
-        echo "Skipping claude-sessions (not installed or not a symlink)"; \
+        echo "Skipping ccss (not installed or not a symlink)"; \
     fi
 
 # Uninstall claude-resume
