@@ -1,11 +1,11 @@
-# claude-sessions
+# ccss - Claude Code Session Search
 
-Browse recent Claude Code sessions from `~/.claude/projects`.
+Browse and search recent Claude Code sessions from `~/.claude/projects`.
 
 ## Usage
 
 ```
-claude-sessions [options] [count]
+ccss [options] [count]
 ```
 
 ## Options
@@ -27,7 +27,7 @@ claude-sessions [options] [count]
 ### Default output
 
 ```
-$ claude-sessions
+$ ccss
 Dec 16 12:17 323.9K  /Users/jane/workspace/github.com/acme/webapp
              └─ Add authentication middleware to Express app
              ▶  git status
@@ -44,7 +44,7 @@ Dec 16 12:08   1.2M  /Users/jane/workspace/github.com/acme/infra-terraform
 ### Verbose output
 
 ```
-$ claude-sessions -v
+$ ccss -v
 Dec 16 12:17 323.9K  /Users/jane/workspace/github.com/acme/webapp
              └─ Add authentication middleware to Express app
              ▶  git status
@@ -66,7 +66,7 @@ Dec 16 12:08   1.2M  /Users/jane/workspace/github.com/acme/infra-terraform
 ### Short paths
 
 ```
-$ claude-sessions -s
+$ ccss -s
 Dec 16 12:17 323.9K  gh:acme/webapp
              └─ Add authentication middleware to Express app
              ▶  git status
@@ -76,10 +76,10 @@ Dec 16 12:17 323.9K  gh:acme/webapp
 ### Search sessions
 
 ```
-$ claude-sessions -g Docker        # case-sensitive
-$ claude-sessions -g docker -i     # case-insensitive
+$ ccss -g Docker        # case-sensitive
+$ ccss -g docker -i     # case-insensitive
 
-$ claude-sessions -g docker -i
+$ ccss -g docker -i
 Dec 15 14:22  89.4K  /Users/jane/workspace/github.com/acme/webapp
              └─ Configure Docker multi-stage build for production
              ▶  run the build

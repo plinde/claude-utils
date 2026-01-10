@@ -2,7 +2,15 @@
 
 REPO_DIR := $(shell pwd)
 BIN_DIR := $(HOME)/bin
-EXECUTABLES := ccpm claude-sessions claude-resume
+EXECUTABLES := ccpm ccss claude-resume
+
+# Map executable names to their source directories (defaults to same name)
+ccss_DIR := claude-code-session-search
+
+# Helper function to get directory for an executable
+# Usage: $(call get_dir,executable_name)
+# Returns $(executable_name)_DIR if defined, otherwise executable_name
+get_dir = $(if $($(1)_DIR),$($(1)_DIR),$(1))
 
 .PHONY: all help install install-all uninstall check clean test list $(addprefix install-,$(EXECUTABLES)) $(addprefix uninstall-,$(EXECUTABLES))
 
@@ -19,12 +27,21 @@ help: ## Show this help
 list: ## List available tools
 	@echo "Available tools:"
 	@for exe in $(EXECUTABLES); do \
-		if [ -x "$(REPO_DIR)/$$exe/$$exe" ]; then \
+		dir=$$($(MAKE) --no-print-directory print-dir-$$exe 2>/dev/null || echo "$$exe"); \
+		if [ -x "$(REPO_DIR)/$$dir/$$exe" ]; then \
 			echo "  $$exe"; \
 		else \
 			echo "  $$exe (missing)"; \
 		fi \
 	done
+
+# Print directory for an executable (used internally)
+print-dir-ccss:
+	@echo "$(call get_dir,ccss)"
+print-dir-ccpm:
+	@echo "$(call get_dir,ccpm)"
+print-dir-claude-resume:
+	@echo "$(call get_dir,claude-resume)"
 
 install: install-all ## Install all tools to ~/bin
 
@@ -36,14 +53,14 @@ install-all: | $(BIN_DIR) ## Install all tools to ~/bin
 # Generate install-<tool> targets
 define INSTALL_TOOL
 install-$(1): | $(BIN_DIR)
-	@if [ ! -x "$(REPO_DIR)/$(1)/$(1)" ]; then \
-		echo "Error: $(1) not found at $(REPO_DIR)/$(1)/$(1)"; \
+	@if [ ! -x "$(REPO_DIR)/$(call get_dir,$(1))/$(1)" ]; then \
+		echo "Error: $(1) not found at $(REPO_DIR)/$(call get_dir,$(1))/$(1)"; \
 		exit 1; \
 	fi
 	@if [ -e "$(BIN_DIR)/$(1)" ]; then \
 		echo "Skipping $(1) (exists)"; \
 	else \
-		ln -s "$(REPO_DIR)/$(1)/$(1)" "$(BIN_DIR)/$(1)"; \
+		ln -s "$(REPO_DIR)/$(call get_dir,$(1))/$(1)" "$(BIN_DIR)/$(1)"; \
 		echo "Linked $(1) -> $(BIN_DIR)/$(1)"; \
 	fi
 endef
