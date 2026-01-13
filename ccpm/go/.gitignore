@@ -1,6 +1,5 @@
 # Built binary
-ccpm
-ccpm-go
+dist/
 
 # Test binaries
 *.test
