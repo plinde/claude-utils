@@ -1,17 +1,20 @@
 .PHONY: all build test clean install lint
 
 BINARY := ccpm
-BUILD_DIR := .
+DIST_DIR := dist
 GO_FILES := $(shell find . -name '*.go' -type f)
 
 # Default target
 all: build
 
-# Build the binary
-build: $(BINARY)
+# Build the binary to dist/
+build: $(DIST_DIR)/$(BINARY)
 
-$(BINARY): $(GO_FILES)
-	go build -o $(BINARY) ./cmd/ccpm
+$(DIST_DIR)/$(BINARY): $(GO_FILES) | $(DIST_DIR)
+	go build -o $(DIST_DIR)/$(BINARY) ./cmd/ccpm
+
+$(DIST_DIR):
+	mkdir -p $(DIST_DIR)
 
 # Run all tests
 test:
@@ -25,17 +28,12 @@ test-coverage:
 
 # Clean build artifacts
 clean:
-	rm -f $(BINARY) coverage.out coverage.html
+	rm -rf $(DIST_DIR) coverage.out coverage.html
 
 # Install to ~/bin
 install: build
-	cp $(BINARY) ~/bin/ccpm-go
-	@echo "Installed to ~/bin/ccpm-go"
-
-# Install as main ccpm (replaces Bash version)
-install-replace: build
-	cp $(BINARY) ~/bin/ccpm
-	@echo "Installed to ~/bin/ccpm (replaced Bash version)"
+	cp $(DIST_DIR)/$(BINARY) ~/bin/$(BINARY)
+	@echo "Installed to ~/bin/$(BINARY)"
 
 # Lint with golangci-lint (if available)
 lint:
@@ -48,16 +46,15 @@ fmt:
 
 # Run the binary
 run: build
-	./$(BINARY)
+	./$(DIST_DIR)/$(BINARY)
 
 # Show help
 help:
 	@echo "Targets:"
-	@echo "  build          - Build the binary"
+	@echo "  build          - Build the binary to dist/"
 	@echo "  test           - Run all tests"
 	@echo "  test-coverage  - Run tests with coverage report"
 	@echo "  clean          - Remove build artifacts"
-	@echo "  install        - Install to ~/bin/ccpm-go"
-	@echo "  install-replace - Install to ~/bin/ccpm (replace Bash)"
+	@echo "  install        - Install to ~/bin/ccpm"
 	@echo "  lint           - Run golangci-lint"
 	@echo "  fmt            - Format code"

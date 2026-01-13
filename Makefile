@@ -5,7 +5,8 @@ BIN_DIR := $(HOME)/bin
 EXECUTABLES := ccpm ccss claude-resume
 
 # Map executable names to their source directories (defaults to same name)
-ccpm_DIR := claude-code-plugin-manager
+ccpm_DIR := ccpm/go/dist
+ccpm_SRC := ccpm/go
 ccss_DIR := claude-code-session-search
 
 # Aliases: symlinks that point to other executables (alias -> target)
@@ -21,9 +22,13 @@ cc-plugin-manager_TARGET := ccpm
 # Returns $(executable_name)_DIR if defined, otherwise executable_name
 get_dir = $(if $($(1)_DIR),$($(1)_DIR),$(1))
 
-.PHONY: all help install install-all uninstall check clean test list $(addprefix install-,$(EXECUTABLES)) $(addprefix uninstall-,$(EXECUTABLES)) $(addprefix install-,$(ALIASES)) $(addprefix uninstall-,$(ALIASES))
+.PHONY: all help install install-all uninstall check clean test list build-ccpm $(addprefix install-,$(EXECUTABLES)) $(addprefix uninstall-,$(EXECUTABLES)) $(addprefix install-,$(ALIASES)) $(addprefix uninstall-,$(ALIASES))
 
 .DEFAULT_GOAL := help
+
+# Build ccpm Go binary before installing
+build-ccpm:
+	@$(MAKE) -C $(REPO_DIR)/$(ccpm_SRC) build
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -78,6 +83,9 @@ install-$(1): | $(BIN_DIR)
 endef
 
 $(foreach exe,$(EXECUTABLES),$(eval $(call INSTALL_TOOL,$(exe))))
+
+# ccpm requires building Go binary first
+install-ccpm: build-ccpm
 
 # Generate install-<alias> targets (symlinks to other executables)
 define INSTALL_ALIAS
