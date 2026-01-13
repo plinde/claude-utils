@@ -1,0 +1,10 @@
+# Built binary
+ccpm
+ccpm-go
+
+# Test binaries
+*.test
+
+# Coverage
+coverage.out
+coverage.html
