@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# claude-sessions - Browse recent Claude Code sessions
+# ccss - Claude Code Session Search
 #
-# Usage: claude-sessions [options] [count]
+# Browse and search recent Claude Code sessions from ~/.claude/projects
+#
+# Usage: ccss [options] [count]
 #   -n COUNT      Number of sessions to show
 #   -a, --all     Include agent/subagent sessions
 #   -s, --short   Use shortened paths (gh:, ws:, ~/)
@@ -317,9 +319,9 @@ main() {
             --here) current_dir_only=true; shift ;;
             -h|--help)
                 cat <<'HELP'
-Usage: claude-sessions [options] [count]
+Usage: ccss [options] [count]
 
-Browse recent Claude Code sessions from ~/.claude/projects
+Browse and search recent Claude Code sessions from ~/.claude/projects
 
 Options:
   -n COUNT       Number of sessions to show (default: 3)
@@ -342,16 +344,16 @@ Date formats:
   YYYY.MM.DD   Full date (e.g., 2025.12.01)
 
 Examples:
-  claude-sessions           # Show 3 most recent sessions
-  claude-sessions -n 20     # Show 20 most recent sessions
-  claude-sessions -s        # Use shortened paths
-  claude-sessions -v        # Show refs, file path, message counts
-  claude-sessions -g Tutor     # Case-sensitive search
-  claude-sessions --here    # Sessions for current directory only
-  claude-sessions -j | jq   # JSON output for scripting
-  claude-sessions --from 2025.11 --to 2025.12      # Nov-Dec 2025
-  claude-sessions --from 2025.12.01 --to 2025.12.05
-  claude-sessions --from 2025 --by-start           # All of 2025 by start
+  ccss           # Show 3 most recent sessions
+  ccss -n 20     # Show 20 most recent sessions
+  ccss -s        # Use shortened paths
+  ccss -v        # Show refs, file path, message counts
+  ccss -g Tutor  # Case-sensitive search
+  ccss --here    # Sessions for current directory only
+  ccss -j | jq   # JSON output for scripting
+  ccss --from 2025.11 --to 2025.12      # Nov-Dec 2025
+  ccss --from 2025.12.01 --to 2025.12.05
+  ccss --from 2025 --by-start           # All of 2025 by start
 HELP
                 return 0
                 ;;
