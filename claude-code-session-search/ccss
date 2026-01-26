@@ -17,12 +17,20 @@
 #   --by-start    Filter date range by session start time
 #   --by-last     Filter date range by last activity (default)
 #   --here        Only show sessions for current directory
+#   -f, --fzf     Interactive fzf mode - filter and select session to resume
+#   --path-only   Show unique project paths with timestamps (for cd, not resume)
+#   --ignore PATH Add a path to the global ignore list
+#   --unignore PATH Remove a path from the ignore list
+#   --list-ignored  Show all ignored paths
 #   -h, --help    Show help
 #
 
 # Configuration
 PROJECTS_DIR="${HOME}/.claude/projects"
-DEFAULT_COUNT=3
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-session-search"
+IGNORE_FILE="${CONFIG_DIR}/ignore"
+DEFAULT_COUNT=10
+FZF_DEFAULT_COUNT=100
 
 # Colors
 C_CYAN='\033[36m'
@@ -33,6 +41,68 @@ C_GREEN='\033[92m'
 C_BLUE='\033[94m'
 C_ORANGE='\033[93m'
 C_RESET='\033[0m'
+
+# Helper: Ensure config directory exists
+ensure_config_dir() {
+    [[ ! -d "$CONFIG_DIR" ]] && mkdir -p "$CONFIG_DIR"
+}
+
+# Helper: Add path to ignore list
+add_ignore() {
+    local path="$1"
+    ensure_config_dir
+    # Normalize path (remove trailing slash)
+    path="${path%/}"
+    # Check if already ignored
+    if [[ -f "$IGNORE_FILE" ]] && grep -qxF "$path" "$IGNORE_FILE" 2>/dev/null; then
+        echo "Path already ignored: $path"
+        return 0
+    fi
+    echo "$path" >> "$IGNORE_FILE"
+    echo "Added to ignore list: $path"
+}
+
+# Helper: Remove path from ignore list
+remove_ignore() {
+    local path="$1"
+    path="${path%/}"
+    if [[ ! -f "$IGNORE_FILE" ]]; then
+        echo "No ignore file found"
+        return 1
+    fi
+    if ! grep -qxF "$path" "$IGNORE_FILE" 2>/dev/null; then
+        echo "Path not in ignore list: $path"
+        return 1
+    fi
+    # Remove the line (macOS compatible)
+    # Use || true because grep returns 1 when no lines match (file becomes empty)
+    local tmp
+    tmp=$(mktemp)
+    grep -vxF "$path" "$IGNORE_FILE" > "$tmp" || true
+    mv "$tmp" "$IGNORE_FILE"
+    echo "Removed from ignore list: $path"
+}
+
+# Helper: List all ignored paths
+list_ignored() {
+    if [[ ! -f "$IGNORE_FILE" ]] || [[ ! -s "$IGNORE_FILE" ]]; then
+        echo "No paths ignored"
+        echo "Ignore file: $IGNORE_FILE"
+        return 0
+    fi
+    echo "Ignored paths ($IGNORE_FILE):"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && echo "  $line"
+    done < "$IGNORE_FILE"
+}
+
+# Helper: Check if path should be ignored
+is_ignored() {
+    local path="$1"
+    path="${path%/}"
+    [[ ! -f "$IGNORE_FILE" ]] && return 1
+    grep -qxF "$path" "$IGNORE_FILE" 2>/dev/null
+}
 
 # Helper: Extract last user prompt from a session file
 get_last_prompt() {
@@ -279,12 +349,15 @@ main() {
     local short_paths=false
     local verbose=false
     local json_output=false
+    local fzf_mode=false
+    local path_only=false
     local current_dir_only=false
     local search_pattern=""
     local case_insensitive=false
     local from_epoch=""
     local to_epoch=""
     local filter_mode="last"  # "start" or "last"
+    local count_explicitly_set=false
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -292,10 +365,21 @@ main() {
             -a|--all) include_agents=true; shift ;;
             -s|--short) short_paths=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
-            -g|--grep) search_pattern="$2"; shift 2 ;;
+            -g|--grep)
+                # Handle -g -i PATTERN or -g PATTERN
+                if [[ "$2" == "-i" ]]; then
+                    case_insensitive=true
+                    search_pattern="$3"
+                    shift 3
+                else
+                    search_pattern="$2"
+                    shift 2
+                fi
+                ;;
             -i) case_insensitive=true; shift ;;
             -j|--json) json_output=true; shift ;;
-            -n) count="$2"; shift 2 ;;
+            -f|--fzf) fzf_mode=true; shift ;;
+            -n) count="$2"; count_explicitly_set=true; shift 2 ;;
             --from)
                 from_epoch=$(parse_date "$2" "from")
                 if [[ -z "$from_epoch" ]]; then
@@ -317,6 +401,19 @@ main() {
             --by-start) filter_mode="start"; shift ;;
             --by-last) filter_mode="last"; shift ;;
             --here) current_dir_only=true; shift ;;
+            --path-only) path_only=true; shift ;;
+            --ignore)
+                add_ignore "$2"
+                return 0
+                ;;
+            --unignore)
+                remove_ignore "$2"
+                return 0
+                ;;
+            --list-ignored)
+                list_ignored
+                return 0
+                ;;
             -h|--help)
                 cat <<'HELP'
 Usage: ccss [options] [count]
@@ -324,18 +421,23 @@ Usage: ccss [options] [count]
 Browse and search recent Claude Code sessions from ~/.claude/projects
 
 Options:
-  -n COUNT       Number of sessions to show (default: 3)
+  -n COUNT       Number of sessions to show (default: 10, fzf mode: 100)
   -a, --all      Include agent/subagent sessions
   -s, --short    Use shortened paths (gh:, ws:, ~/)
   -v, --verbose  Show extra info (refs, file path, message count)
   -g, --grep     Search sessions for keyword (case-sensitive)
   -i             Case-insensitive search (use with -g)
   -j, --json     Output as JSON (one object per line)
+  -f, --fzf      Interactive fzf mode - filter and select session to resume
+  --path-only    Show unique project paths with timestamps (for cd, not resume)
   --from DATE    Only show sessions on or after DATE
   --to DATE      Only show sessions on or before DATE
   --by-start     Filter date range by session start time
   --by-last      Filter date range by last activity (default)
   --here         Only show sessions for current directory
+  --ignore PATH  Add a path to the global ignore list
+  --unignore PATH  Remove a path from the ignore list
+  --list-ignored Show all ignored paths
   -h, --help     Show this help
 
 Date formats:
@@ -344,13 +446,19 @@ Date formats:
   YYYY.MM.DD   Full date (e.g., 2025.12.01)
 
 Examples:
-  ccss           # Show 3 most recent sessions
+  ccss           # Show 10 most recent sessions
   ccss -n 20     # Show 20 most recent sessions
   ccss -s        # Use shortened paths
   ccss -v        # Show refs, file path, message counts
   ccss -g Tutor  # Case-sensitive search
   ccss --here    # Sessions for current directory only
   ccss -j | jq   # JSON output for scripting
+  ccss -f        # Interactive fzf picker, resume on selection
+  ccss -f -n 50  # fzf with 50 sessions
+  ccss --path-only          # List unique project paths
+  ccss --path-only -f       # fzf picker for paths (cd to selection)
+  ccss --ignore /path/to/hide   # Hide a path from results
+  ccss --list-ignored           # Show ignored paths
   ccss --from 2025.11 --to 2025.12      # Nov-Dec 2025
   ccss --from 2025.12.01 --to 2025.12.05
   ccss --from 2025 --by-start           # All of 2025 by start
@@ -365,6 +473,28 @@ HELP
                 ;;
         esac
     done
+
+    # fzf mode setup
+    if $fzf_mode; then
+        if ! command -v fzf &>/dev/null; then
+            echo "Error: fzf is not installed. Install with: brew install fzf" >&2
+            return 1
+        fi
+        # Use higher default count for fzf if not explicitly set
+        if ! $count_explicitly_set; then
+            count=$FZF_DEFAULT_COUNT
+        fi
+    fi
+
+    # path-only mode: we need to scan more sessions to get enough unique paths
+    # Store the desired unique path count, then scan more files
+    local desired_path_count=0
+    if $path_only; then
+        desired_path_count=$count
+        # Scan many more files to find unique paths (multiply by 10 as heuristic)
+        count=$((count * 10))
+        [[ $count -lt $FZF_DEFAULT_COUNT ]] && count=$FZF_DEFAULT_COUNT
+    fi
 
     [[ ! -d "$PROJECTS_DIR" ]] && {
         echo "No Claude projects directory found at $PROJECTS_DIR" >&2
@@ -447,6 +577,12 @@ HELP
         return 1
     }
 
+    # Collect fzf lines if in fzf mode
+    local fzf_lines=""
+    # Track seen paths for --path-only deduplication
+    local seen_paths=""
+    local unique_path_count=0
+
     # Process each file
     local filepath size size_human time_str start_str filename summary project_path display_path last_prompt msg_count
     for filepath in "${file_list[@]}"; do
@@ -464,9 +600,33 @@ HELP
         project_path=$(grep -m1 '"cwd"' "$filepath" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null)
         last_prompt=$(get_last_prompt "$filepath")
 
-        # Fallback for project path
-        [[ -z "$project_path" ]] && \
-            project_path=$(basename "$(dirname "$filepath")" | sed 's/^-/\//' | sed 's/-/\//g')
+        # Handle missing cwd field
+        if [[ -z "$project_path" ]]; then
+            # In path-only mode, skip sessions without valid cwd (can't reliably decode path)
+            if $path_only; then
+                continue
+            fi
+            # Fallback: show raw encoded directory name (don't try to decode - it's lossy)
+            project_path="[encoded] $(basename "$(dirname "$filepath")")"
+        fi
+
+        # Skip ignored paths
+        if is_ignored "$project_path"; then
+            continue
+        fi
+
+        # Skip duplicate paths in --path-only mode
+        if $path_only; then
+            if [[ "$seen_paths" == *"|${project_path}|"* ]]; then
+                continue
+            fi
+            seen_paths+="|${project_path}|"
+            ((unique_path_count++))
+            # Check if we have enough unique paths
+            if [[ $desired_path_count -gt 0 && $unique_path_count -gt $desired_path_count ]]; then
+                break
+            fi
+        fi
 
         # Choose display path based on -s flag
         if $short_paths; then
@@ -493,6 +653,46 @@ HELP
                 "$(echo "$summary" | sed 's/"/\\"/g')" \
                 "$(echo "$last_prompt" | sed 's/"/\\"/g')" \
                 "$jira_json" "$branch_json"
+        elif $path_only; then
+            # Path-only mode: timestamp + path (for cd, not resume)
+            if $fzf_mode; then
+                # fzf path selection: display path, tab + full path for extraction
+                local fzf_line
+                fzf_line=$(printf "%s  %s\t%s" "$time_str" "$display_path" "$project_path")
+                fzf_lines+="$fzf_line"$'\n'
+            else
+                # Simple text output
+                printf "${C_CYAN}%-12s${C_RESET}  %s\n" "$time_str" "$display_path"
+            fi
+        elif $fzf_mode; then
+            # fzf output: single line with all searchable fields, session_id at end after tab
+            local refs_raw jira_refs branch_refs date_display
+            refs_raw=$(get_refs "$filepath")
+            jira_refs=$(echo "$refs_raw" | grep '^JIRA:' | sed 's/^JIRA://' | xargs)
+            branch_refs=$(echo "$refs_raw" | grep '^BRANCH:' | sed 's/^BRANCH://' | xargs)
+
+            # Date display: prefer start time if available
+            if [[ -n "$start_str" && "$start_str" != "$time_str" ]]; then
+                date_display="${start_str}→${time_str}"
+            else
+                date_display="$time_str"
+            fi
+
+            # Format: date | size | path | summary | prompt | [jira] [branches] | session_id
+            # Use tab before session_id for easy extraction
+            local fzf_line
+            fzf_line=$(printf "%s │ %5s │ %s │ %s │ %s" \
+                "$date_display" "$size_human" "$display_path" \
+                "${summary:-<no summary>}" "${last_prompt:-<no prompt>}")
+
+            # Add refs if present (searchable but compact)
+            [[ -n "$jira_refs" ]] && fzf_line+=" │ 🎫${jira_refs}"
+            [[ -n "$branch_refs" ]] && fzf_line+=" │ 🌿${branch_refs}"
+
+            # Tab + session_id at end (hidden from display width but searchable)
+            fzf_line+=$'\t'"$filename"
+
+            fzf_lines+="$fzf_line"$'\n'
         else
             # Human-readable output - show start→last if different, otherwise just one time
             if [[ -n "$start_str" && "$start_str" != "$time_str" ]]; then
@@ -534,6 +734,51 @@ HELP
             printf "                          ${C_GRAY}   %s${C_RESET}\n" "$filename"
         fi
     done
+
+    # Handle fzf selection
+    if $fzf_mode && [[ -n "$fzf_lines" ]]; then
+        local selected extracted fzf_prompt fzf_header
+
+        if $path_only; then
+            fzf_prompt="Select path > "
+            fzf_header="Filter by path... Enter=output path, Esc=cancel"
+        else
+            fzf_prompt="Select session to resume > "
+            fzf_header="Filter by path, summary, prompt, JIRA, branch... Enter=resume, Esc=cancel"
+        fi
+
+        selected=$(printf '%s' "$fzf_lines" | fzf \
+            --height=80% \
+            --layout=reverse \
+            --border=rounded \
+            --prompt="$fzf_prompt" \
+            --header="$fzf_header" \
+            --preview-window=hidden \
+            --tabstop=1000 \
+            --no-hscroll \
+            --ansi)
+
+        if [[ -n "$selected" ]]; then
+            # Extract value after the tab (path or session_id)
+            extracted=$(echo "$selected" | awk -F'\t' '{print $NF}')
+            if [[ -n "$extracted" ]]; then
+                if $path_only; then
+                    # Output path for cd: cd $(ccss --path-only -f)
+                    echo "$extracted"
+                else
+                    echo "Resuming session: $extracted"
+                    exec claude --resume "$extracted"
+                fi
+            else
+                echo "Error: Could not extract selection" >&2
+                return 1
+            fi
+        else
+            # Cancelled - silent exit for path-only (useful in cd $(...))
+            $path_only || echo "No session selected" >&2
+            return 0
+        fi
+    fi
 }
 
 # Only run main when executed directly, not when sourced
