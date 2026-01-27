@@ -9,7 +9,7 @@
 #   ccpm upgrade [org/repo] [--dry-run]            # Update + reinstall changed plugins
 #   ccpm add <org/repo> <alias>                    # Add marketplace mapping
 #   ccpm remove <org/repo>                         # Remove marketplace mapping
-#   ccpm list                                      # List configured marketplaces
+#   ccpm list                                      # List marketplaces and installed plugins
 #   ccpm config                                    # Show config file path
 #
 # Options:
@@ -232,7 +232,37 @@ cmd_remove() {
     echo -e "${GREEN}Removed${NC} ${repo}"
 }
 
-# List configured marketplaces
+# Get installed plugins for a marketplace
+get_installed_plugins() {
+    local alias="$1"
+    local marketplace_dir="$PLUGINS_DIR/$alias"
+
+    if [[ ! -d "$marketplace_dir" ]]; then
+        return
+    fi
+
+    # Check plugins/ subdirectory
+    if [[ -d "$marketplace_dir/plugins" ]]; then
+        for dir in "$marketplace_dir/plugins"/*/; do
+            [[ ! -d "$dir" ]] && continue
+            if [[ -d "$dir/.claude-plugin" ]]; then
+                basename "$dir"
+            fi
+        done
+    fi
+
+    # Check external_plugins/ subdirectory
+    if [[ -d "$marketplace_dir/external_plugins" ]]; then
+        for dir in "$marketplace_dir/external_plugins"/*/; do
+            [[ ! -d "$dir" ]] && continue
+            if [[ -d "$dir/.claude-plugin" ]]; then
+                basename "$dir"
+            fi
+        done
+    fi
+}
+
+# List configured marketplaces and installed plugins
 cmd_list() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo "No marketplaces configured."
@@ -258,6 +288,42 @@ cmd_list() {
         fi
         printf "  %-50s %-25s %b\n" "$repo" "$alias" "$status"
     done < <(get_all_repos)
+
+    # Show installed plugins
+    echo
+    echo -e "${BLUE}Installed plugins:${NC}"
+    echo
+
+    local has_plugins=false
+
+    while IFS= read -r repo; do
+        [[ -z "$repo" ]] && continue
+        local alias
+        alias=$(get_alias "$repo")
+
+        if [[ ! -d "$PLUGINS_DIR/$alias" ]]; then
+            continue
+        fi
+
+        local plugins
+        plugins=$(get_installed_plugins "$alias")
+
+        if [[ -z "$plugins" ]]; then
+            continue
+        fi
+
+        has_plugins=true
+        echo -e "  ${GREEN}$alias${NC}:"
+        while IFS= read -r plugin; do
+            [[ -z "$plugin" ]] && continue
+            echo "    $plugin"
+        done <<< "$plugins"
+        echo
+    done < <(get_all_repos)
+
+    if [[ "$has_plugins" == false ]]; then
+        echo -e "  ${DIM}No plugins installed.${NC}"
+    fi
 }
 
 # Get list of changed plugin directories between two commits
@@ -555,7 +621,7 @@ Commands:
   upgrade [org/repo]     Fetch + reinstall changed plugins
   add <org/repo> <alias> Add marketplace to config
   remove <org/repo>      Remove marketplace from config
-  list                   List configured marketplaces
+  list                   List marketplaces and installed plugins
   config                 Show config file path and contents
   help                   Show this help
 

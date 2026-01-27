@@ -15,7 +15,7 @@ ccpm discover                              # Import installed marketplaces
 ccpm update [org/repo] [--dry-run]        # Update plugins from marketplace(s)
 ccpm add <org/repo> <alias>               # Add marketplace mapping
 ccpm remove <org/repo>                    # Remove marketplace mapping
-ccpm list                                 # List configured marketplaces
+ccpm list                                 # List marketplaces and installed plugins
 ccpm config                               # Show config file path
 ```
 
@@ -79,11 +79,15 @@ ccpm remove anthropics/skills
 
 ### list
 
-Show configured marketplaces with installation status:
+Show configured marketplaces with installation status and all installed plugins:
 
 ```bash
 ccpm list
 ```
+
+Output includes:
+- Configured marketplaces with installation status
+- Installed plugins grouped by marketplace
 
 ### config
 
