@@ -1,0 +1,9 @@
+# Built binary
+dist/
+
+# Test binaries
+*.test
+
+# Coverage
+coverage.out
+coverage.html
