@@ -11,7 +11,10 @@
 #   -s, --short   Use shortened paths (gh:, ws:, ~/)
 #   -v, --verbose Show extra info (refs, file path, message count)
 #   -g, --grep    Search sessions for keyword (case-sensitive)
-#   -i            Case-insensitive search (use with -g)
+#   -S, --search  Search message content and display matching lines
+#   --context N   Message context around search matches (default: 1)
+#   --max-per-session N  Max matches per session (default: 10)
+#   -i            Case-insensitive search (use with -g or -S)
 #   -j, --json    Output as JSON
 #   --from DATE   Only show sessions on or after DATE
 #   --to DATE     Only show sessions on or before DATE
@@ -41,6 +44,7 @@ C_MAGENTA='\033[35m'
 C_GREEN='\033[92m'
 C_BLUE='\033[94m'
 C_ORANGE='\033[93m'
+C_BOLD='\033[1m'
 C_RESET='\033[0m'
 
 # Helper: Ensure config directory exists
@@ -343,6 +347,201 @@ file_in_date_range() {
     return 0
 }
 
+# Search mode: scan message content and display matching lines with context
+# Args: search_term, case_insensitive, from_epoch, to_epoch, filter_mode,
+#        include_agents, current_dir_only, context_lines, max_per_session, short_paths
+search_content() {
+    local search_term="$1"
+    local case_insensitive="$2"
+    local from_epoch="$3"
+    local to_epoch="$4"
+    local filter_mode="$5"
+    local include_agents="$6"
+    local current_dir_only="$7"
+    local context_lines="${8:-1}"
+    local max_per_session="${9:-10}"
+    local short_paths="${10:-false}"
+
+    local search_dir="$PROJECTS_DIR"
+    if [[ "$current_dir_only" == "true" ]]; then
+        local cwd_encoded
+        cwd_encoded=$(pwd | sed 's/^\///' | sed 's/[\/.]/-/g')
+        search_dir="${PROJECTS_DIR}/-${cwd_encoded}"
+        [[ ! -d "$search_dir" ]] && {
+            echo "No sessions found for current directory" >&2
+            return 1
+        }
+    fi
+
+    # Default --from to 3 weeks ago if not specified
+    if [[ -z "$from_epoch" ]]; then
+        from_epoch=$(date -v-3w +%s 2>/dev/null)
+    fi
+
+    # Build file list sorted newest first
+    local all_files
+    if [[ "$include_agents" == "true" ]]; then
+        all_files=$(find "$search_dir" -name "*.jsonl" -type f -print0 2>/dev/null | \
+            xargs -0 ls -t 2>/dev/null)
+    else
+        all_files=$(find "$search_dir" -name "*.jsonl" -type f ! -name "agent-*.jsonl" -print0 2>/dev/null | \
+            xargs -0 ls -t 2>/dev/null)
+    fi
+
+    local total_matches=0
+    local total_sessions=0
+
+    # Highlight escape codes
+    local hl_on hl_off
+    hl_on=$(printf '\033[1;31m')
+    hl_off=$(printf '\033[0m')
+
+    while IFS= read -r filepath; do
+        [[ -z "$filepath" || ! -f "$filepath" ]] && continue
+
+        # Date filter
+        if ! file_in_date_range "$filepath" "$from_epoch" "$to_epoch" "$filter_mode"; then
+            continue
+        fi
+
+        # Quick reject: does the file contain the term at all?
+        local quick_grep_opts="-q"
+        [[ "$case_insensitive" == "true" ]] && quick_grep_opts="-qi"
+        if ! grep $quick_grep_opts "$search_term" "$filepath" 2>/dev/null; then
+            continue
+        fi
+
+        # Extract project path for ignore check
+        local project_path
+        project_path=$(grep -m1 '"cwd"' "$filepath" 2>/dev/null | grep -o '"cwd":"[^"]*"' | cut -d'"' -f4)
+        if [[ -n "$project_path" ]] && is_ignored "$project_path"; then
+            continue
+        fi
+
+        # Extract all messages in one jq call: "idx\trole\tcontent" per line
+        # Only user/assistant with string content
+        local messages_tsv
+        messages_tsv=$(jq -r '
+            select(.type == "user" or .type == "assistant") |
+            select(.message.content | type == "string") |
+            [.type, (.message.content | gsub("\n"; " ") | gsub("\t"; " "))] |
+            @tsv
+        ' "$filepath" 2>/dev/null)
+
+        [[ -z "$messages_tsv" ]] && continue
+
+        # Convert to indexed arrays
+        local -a msg_roles=()
+        local -a msg_contents=()
+        local msg_idx=0
+
+        while IFS=$'\t' read -r role content; do
+            [[ -z "$role" ]] && continue
+            msg_roles[msg_idx]="$role"
+            msg_contents[msg_idx]="$content"
+            ((msg_idx++))
+        done <<< "$messages_tsv"
+
+        [[ $msg_idx -eq 0 ]] && continue
+
+        local session_matches=0
+        local header_printed=false
+        local display_path
+
+        if [[ "$short_paths" == "true" && -n "$project_path" ]]; then
+            display_path=$(shorten_path "$project_path")
+        elif [[ -n "$project_path" ]]; then
+            display_path="$project_path"
+        else
+            display_path="[unknown]"
+        fi
+
+        local start_str
+        start_str=$(get_session_start_display "$filepath")
+        [[ -z "$start_str" ]] && start_str=$(stat -f "%Sm" -t "%b %d %H:%M" "$filepath" 2>/dev/null)
+
+        # Search through collected messages
+        local i
+        for ((i=0; i<msg_idx; i++)); do
+            local content="${msg_contents[$i]}"
+
+            # Check if content matches
+            local match_found=false
+            if [[ "$case_insensitive" == "true" ]]; then
+                echo "$content" | grep -qi "$search_term" 2>/dev/null && match_found=true
+            else
+                echo "$content" | grep -q "$search_term" 2>/dev/null && match_found=true
+            fi
+
+            if $match_found; then
+                if ! $header_printed; then
+                    printf "\n${C_GRAY}── ${C_CYAN}%s${C_GRAY} • ${C_CYAN}%s${C_GRAY} ──────────────────────────────────${C_RESET}\n" \
+                        "$display_path" "$start_str"
+                    header_printed=true
+                    ((total_sessions++))
+                fi
+
+                # Context window
+                local ctx_start=$((i - context_lines))
+                [[ $ctx_start -lt 0 ]] && ctx_start=0
+                local ctx_end=$((i + context_lines))
+                [[ $ctx_end -ge $msg_idx ]] && ctx_end=$((msg_idx - 1))
+
+                local j
+                for ((j=ctx_start; j<=ctx_end; j++)); do
+                    local ctx_role="${msg_roles[$j]}"
+                    local ctx_content="${msg_contents[$j]}"
+                    # Truncate long content
+                    if [[ ${#ctx_content} -gt 200 ]]; then
+                        ctx_content="${ctx_content:0:200}..."
+                    fi
+
+                    if [[ $j -eq $i ]]; then
+                        # Highlight the search term in the matching line
+                        local highlighted
+                        if [[ "$case_insensitive" == "true" ]]; then
+                            highlighted=$(echo "$ctx_content" | sed -E "s/($search_term)/${hl_on}\\1${hl_off}/gI" 2>/dev/null)
+                            # macOS sed may not support I flag
+                            [[ "$highlighted" == "$ctx_content" ]] && highlighted="$ctx_content"
+                        else
+                            highlighted=$(echo "$ctx_content" | sed -E "s/($search_term)/${hl_on}\\1${hl_off}/g" 2>/dev/null)
+                        fi
+                        printf "  ${C_BOLD}[%s]${C_RESET} %s\n" "$ctx_role" "$highlighted"
+                    else
+                        printf "  ${C_GRAY}[%s] %s${C_RESET}\n" "$ctx_role" "$ctx_content"
+                    fi
+                done
+
+                ((session_matches++))
+                ((total_matches++))
+
+                if [[ $session_matches -ge $max_per_session ]]; then
+                    # Count remaining matches
+                    local remaining=0
+                    local k
+                    for ((k=i+1; k<msg_idx; k++)); do
+                        if [[ "$case_insensitive" == "true" ]]; then
+                            echo "${msg_contents[$k]}" | grep -qi "$search_term" 2>/dev/null && ((remaining++))
+                        else
+                            echo "${msg_contents[$k]}" | grep -q "$search_term" 2>/dev/null && ((remaining++))
+                        fi
+                    done
+                    [[ $remaining -gt 0 ]] && \
+                        printf "  ${C_GRAY}[%d more matches...]${C_RESET}\n" "$remaining"
+                    break
+                fi
+            fi
+        done
+    done <<< "$all_files"
+
+    if [[ $total_matches -eq 0 ]]; then
+        echo "No content matches for '$search_term'" >&2
+        return 1
+    fi
+
+    printf "\n${C_GRAY}%d matches in %d sessions${C_RESET}\n" "$total_matches" "$total_sessions"
+}
+
 # Main function
 main() {
     local count=$DEFAULT_COUNT
@@ -355,6 +554,9 @@ main() {
     local path_only=false
     local current_dir_only=false
     local search_pattern=""
+    local search_content_term=""
+    local search_context=1
+    local search_max_per_session=10
     local case_insensitive=false
     local from_epoch=""
     local to_epoch=""
@@ -379,6 +581,9 @@ main() {
                     shift 2
                 fi
                 ;;
+            -S|--search) search_content_term="$2"; shift 2 ;;
+            --context) search_context="$2"; shift 2 ;;
+            --max-per-session) search_max_per_session="$2"; shift 2 ;;
             -i) case_insensitive=true; shift ;;
             -j|--json) json_output=true; shift ;;
             -f|--fzf) fzf_mode=true; shift ;;
@@ -430,7 +635,10 @@ Options:
   -s, --short    Use shortened paths (gh:, ws:, ~/)
   -v, --verbose  Show extra info (refs, file path, message count)
   -g, --grep     Search sessions for keyword (case-sensitive)
-  -i             Case-insensitive search (use with -g)
+  -S, --search TERM  Search message content, show matching lines with context
+  --context N    Messages of context around search matches (default: 1)
+  --max-per-session N  Max matches per session (default: 10)
+  -i             Case-insensitive search (use with -g or -S)
   -j, --json     Output as JSON (one object per line)
   -f, --fzf      Interactive fzf mode - filter and select session to resume
   --path-only    Show unique project paths with timestamps (for cd, not resume)
@@ -456,6 +664,10 @@ Examples:
   ccss -s        # Use shortened paths
   ccss -v        # Show refs, file path, message counts
   ccss -g Tutor  # Case-sensitive search
+  ccss -S '.pem'           # Search message content for '.pem'
+  ccss -S terraform -i     # Case-insensitive content search
+  ccss -S kubectl --here   # Content search scoped to current project
+  ccss -S '.pem' --context 3  # Show ±3 surrounding messages
   ccss --here    # Sessions for current directory only
   ccss -j | jq   # JSON output for scripting
   ccss -f        # Interactive fzf picker, resume on selection
@@ -489,6 +701,14 @@ HELP
         if ! $count_explicitly_set; then
             count=$FZF_DEFAULT_COUNT
         fi
+    fi
+
+    # Search content mode: dispatch to search_content and exit
+    if [[ -n "$search_content_term" ]]; then
+        search_content "$search_content_term" "$case_insensitive" "$from_epoch" "$to_epoch" \
+            "$filter_mode" "$include_agents" "$current_dir_only" "$search_context" \
+            "$search_max_per_session" "$short_paths"
+        return $?
     fi
 
     # --all flag: override count to unlimited (use a very large number)
