@@ -6,7 +6,8 @@
 #
 # Usage: ccss [options] [count]
 #   -n COUNT      Number of sessions to show
-#   -a, --all     Include agent/subagent sessions
+#   -a            Include agent/subagent sessions
+#   --all         Include agents + show ALL sessions (no count limit)
 #   -s, --short   Use shortened paths (gh:, ws:, ~/)
 #   -v, --verbose Show extra info (refs, file path, message count)
 #   -g, --grep    Search sessions for keyword (case-sensitive)
@@ -346,6 +347,7 @@ file_in_date_range() {
 main() {
     local count=$DEFAULT_COUNT
     local include_agents=false
+    local show_all=false
     local short_paths=false
     local verbose=false
     local json_output=false
@@ -362,7 +364,8 @@ main() {
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -a|--all) include_agents=true; shift ;;
+            -a) include_agents=true; shift ;;
+            --all) include_agents=true; show_all=true; shift ;;
             -s|--short) short_paths=true; shift ;;
             -v|--verbose) verbose=true; shift ;;
             -g|--grep)
@@ -422,7 +425,8 @@ Browse and search recent Claude Code sessions from ~/.claude/projects
 
 Options:
   -n COUNT       Number of sessions to show (default: 10, fzf mode: 100)
-  -a, --all      Include agent/subagent sessions
+  -a             Include agent/subagent sessions
+  --all          Include agents + show ALL sessions (no count limit)
   -s, --short    Use shortened paths (gh:, ws:, ~/)
   -v, --verbose  Show extra info (refs, file path, message count)
   -g, --grep     Search sessions for keyword (case-sensitive)
@@ -448,6 +452,7 @@ Date formats:
 Examples:
   ccss           # Show 10 most recent sessions
   ccss -n 20     # Show 20 most recent sessions
+  ccss --all     # Show ALL sessions (including agents)
   ccss -s        # Use shortened paths
   ccss -v        # Show refs, file path, message counts
   ccss -g Tutor  # Case-sensitive search
@@ -484,6 +489,11 @@ HELP
         if ! $count_explicitly_set; then
             count=$FZF_DEFAULT_COUNT
         fi
+    fi
+
+    # --all flag: override count to unlimited (use a very large number)
+    if $show_all; then
+        count=999999
     fi
 
     # path-only mode: we need to scan more sessions to get enough unique paths
